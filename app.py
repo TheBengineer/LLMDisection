@@ -114,13 +114,12 @@ class QwenExplorer:
         """Download / load the model and tokenizer, register hooks."""
         print(f"[*] Loading {self.model_name} …")
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, trust_remote_code=True
+            self.model_name
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype=torch.float32,
             device_map="cpu",
-            trust_remote_code=True,
         )
         self.model.eval()
 
