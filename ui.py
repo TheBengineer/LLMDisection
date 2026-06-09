@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import gradio as gr
+import plotly.graph_objects as go
 import numpy as np
 
 from engine import QwenExplorer
@@ -25,6 +26,7 @@ from plots import (
     plot_mlp_activation,
     plot_qkv_vector,
     plot_residual_delta,
+    plot_rope_rotation,
     plot_rmsnorm_comparison,
     plot_silu_scatter,
     plot_top_logits,
@@ -501,6 +503,19 @@ def _build_mlp_outputs(token_idx: int, layer_idx: int) -> Tuple:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  RoPE callback
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def on_rope_pos(pos: int) -> go.Figure:
+    """Update RoPE rotation visualization."""
+    _ensure_loaded()
+    explorer = controller.explorer
+    head_dim = explorer.head_dim if explorer else 64
+    return plot_rope_rotation(pos, head_dim=head_dim, num_pairs=8)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  UI Builder
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -602,6 +617,12 @@ def create_ui():
                     with gr.TabItem("🔤 Embedding"):
                         embed_plot = gr.Plot(label="Token Embedding")
 
+                    # ── RoPE tab ──
+                    with gr.TabItem("🔄 RoPE"):
+                        with gr.Row():
+                            rope_pos_slider = gr.Slider(0, 128, value=0, step=1, label="Position")
+                        rope_plot = gr.Plot(label="RoPE Rotation (pairs of dimensions)")
+
                     # ── Contributions tab ──
                     with gr.TabItem("📊 Contributions"):
                         contrib_plot = gr.Plot(label="Layer Contributions (L2 Norm)")
@@ -675,6 +696,12 @@ def create_ui():
             fn=on_change_mlp_layer,
             inputs=[token_selector, mlp_layer_slider],
             outputs=[gate_plot, gate_raw_plot, mlp_out_plot],
+        )
+
+        rope_pos_slider.change(
+            fn=on_rope_pos,
+            inputs=[rope_pos_slider],
+            outputs=[rope_plot],
         )
 
         reset_btn.click(
