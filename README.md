@@ -69,16 +69,16 @@ python app.py
 ## 🏗️ Architecture
 
 ```
-app.py
-├── QwenExplorer           # Engine: load model, register hooks, generate
-│   ├── load()             # Download model, register hooks on all layers
-│   ├── generate_full()    # Auto-generate N tokens
-│   ├── step_forward()     # One token at a time
-│   └── hooks              # Q/K/V, MLP, residual, attention hooks
-├── LayerSnapshot          # One layer's activations at one step
-├── StepSnapshot           # One generation step (logits, probs, all layers)
-├── Visualization helpers  # plot_attention, plot_qkv, plot_mlp, etc.
-└── Gradio UI              # Interactive web interface (create_ui)
+LLMDisection/
+├── app.py                # Entry point (parse args, launch) — 63 lines
+├── data_structures.py    # LayerSnapshot, StepSnapshot dataclasses
+├── engine.py             # QwenExplorer — load model, register hooks, generate
+├── plots.py              # All Plotly visualisation functions
+├── ui.py                 # Gradio UI (UIController, callbacks, create_ui)
+├── flowchart.py          # SVG flowchart layout engine (Phase 2)
+├── run.sh                # Linux launcher
+├── run.bat               # Windows launcher
+└── README.md             # This file
 ```
 
 Every forward hook captures only the **last query position**, minimizing memory. All 24 layers are captured simultaneously in a single forward pass.
@@ -100,10 +100,15 @@ Every forward hook captures only the **last query position**, minimizing memory.
 
 ```
 LLMDisection/
-├── app.py          # Main application (engine + UI + visualization)
-├── run.sh          # Linux/macOS launcher
-├── run.bat         # Windows launcher
-└── README.md       # This file
+├── app.py                # Entry point (parse args, launch)
+├── data_structures.py    # LayerSnapshot, StepSnapshot dataclasses
+├── engine.py             # QwenExplorer — load model, register hooks, generate
+├── plots.py              # All Plotly visualisation functions
+├── ui.py                 # Gradio UI (UIController, callbacks, create_ui)
+├── flowchart.py          # SVG flowchart layout engine (Phase 2)
+├── run.sh                # Linux/macOS launcher
+├── run.bat               # Windows launcher
+└── README.md             # This file
 ```
 
 ---

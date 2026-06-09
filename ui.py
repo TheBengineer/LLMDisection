@@ -18,6 +18,7 @@ from plots import (
     _empty_fig,
     plot_attention,
     plot_attention_scores,
+    plot_embedding_slice,
     plot_histogram,
     plot_layer_contributions,
     plot_logits_sampled,
@@ -333,7 +334,11 @@ def _build_all_outputs(
 
     # ── Embedding ──
     embed_fig = (
-        plot_vector_bar(step.input_embeds, "Token Embedding (last token)")
+        plot_embedding_slice(
+            explorer.weight_matrices.get("embedding"),
+            token_id=step.token_id,
+            vocab=None,
+        )
         if step.input_embeds is not None
         else _empty_fig("Embedding (no data)")
     )

@@ -518,9 +518,36 @@ class QwenExplorer:
             # Q/K/V projection outputs (pre-RoPE)
             if layer_idx in self._current_qkv:
                 qkv = self._current_qkv[layer_idx]
-                layer_snap.q = qkv.get("q")
-                layer_snap.k = qkv.get("k")
-                layer_snap.v = qkv.get("v")
+                q_val = qkv.get("q")
+                k_val = qkv.get("k")
+                v_val = qkv.get("v")
+                layer_snap.q = q_val
+                layer_snap.k = k_val
+                layer_snap.v = v_val
+                # Reshape to [num_heads, head_dim] for pre-RoPE visualisation
+                if q_val is not None:
+                    layer_snap.q_pre_rope = q_val.reshape(self.num_heads, self.head_dim)
+                if k_val is not None:
+                    layer_snap.k_pre_rope = k_val.reshape(self.num_kv_heads, self.head_dim)
+
+            # Q/K post-RoPE (apply rotation using captured cos/sin)
+            if (layer_snap.q_pre_rope is not None
+                    and step.rope_cos is not None
+                    and step.rope_sin is not None):
+                cos = step.rope_cos[-1]          # [head_dim] for last position
+                sin = step.rope_sin[-1]
+                q_pre = layer_snap.q_pre_rope    # [num_heads, head_dim]
+                half = self.head_dim // 2
+                q_rotated = np.concatenate([-q_pre[:, half:], q_pre[:, :half]], axis=1)
+                layer_snap.q_post_rope = (
+                    q_pre * cos[np.newaxis, :] + q_rotated * sin[np.newaxis, :]
+                )
+
+                k_pre = layer_snap.k_pre_rope    # [num_kv_heads, head_dim]
+                k_rotated = np.concatenate([-k_pre[:, half:], k_pre[:, :half]], axis=1)
+                layer_snap.k_post_rope = (
+                    k_pre * cos[np.newaxis, :] + k_rotated * sin[np.newaxis, :]
+                )
 
             # Attention scores (pre-softmax)
             if layer_idx in self._current_attn_scores:
