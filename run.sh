@@ -33,7 +33,7 @@ fi
 # ── Dependencies (one-time) ────────────────────────
 if ! python3 -c "import torch, transformers, gradio, plotly" 2>/dev/null; then
     echo "[*] Installing dependencies …"
-    pip install --quiet torch transformers gradio plotly
+    pip install --quiet torch transformers gradio plotly accelerate
 fi
 
 # ── Launch ─────────────────────────────────────────

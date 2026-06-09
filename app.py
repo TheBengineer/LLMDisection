@@ -118,8 +118,9 @@ class QwenExplorer:
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=torch.float32,
+            dtype=torch.float32,
             device_map="cpu",
+            attn_implementation="eager",
         )
         self.model.eval()
 

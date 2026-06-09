@@ -59,7 +59,7 @@ if errorlevel 1 (
     if errorlevel 1 (
         echo [WARN] pip upgrade skipped (continuing)
     )
-    %PYTHON_CMD% -m pip install torch transformers gradio plotly numpy -q
+    %PYTHON_CMD% -m pip install torch transformers gradio plotly numpy accelerate -q
     if errorlevel 1 (
         echo [ERROR] pip install failed.
         pause
