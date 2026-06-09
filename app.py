@@ -870,7 +870,7 @@ def create_ui():
                     interactive=False,
                 )
                 token_selector = gr.Slider(
-                    0, 0, value=0, step=1,
+                    0, 1, value=0, step=1,
                     label="◀ Select Token Step ▶",
                 )
 
@@ -881,11 +881,11 @@ def create_ui():
                     with gr.TabItem("🔍 Attention"):
                         with gr.Row():
                             attn_layer_slider = gr.Slider(
-                                0, 0, value=0, step=1, label="Layer",
+                                0, 1, value=0, step=1, label="Layer",
                                 scale=1,
                             )
                             attn_head_slider = gr.Slider(
-                                0, 0, value=0, step=1, label="Head",
+                                0, 1, value=0, step=1, label="Head",
                                 scale=1,
                             )
                         attn_plot = gr.Plot(label="Attention Pattern")
@@ -893,7 +893,7 @@ def create_ui():
                     # ── QKV tab ──
                     with gr.TabItem("📊 Q / K / V"):
                         qkv_layer_slider = gr.Slider(
-                            0, 0, value=0, step=1, label="Layer"
+                            0, 1, value=0, step=1, label="Layer"
                         )
                         with gr.Row():
                             q_plot = gr.Plot(label="Q")
@@ -903,7 +903,7 @@ def create_ui():
                     # ── MLP tab ──
                     with gr.TabItem("⚙️ MLP"):
                         mlp_layer_slider = gr.Slider(
-                            0, 0, value=0, step=1, label="Layer"
+                            0, 1, value=0, step=1, label="Layer"
                         )
                         with gr.Row():
                             gate_plot = gr.Plot(label="Gate")
