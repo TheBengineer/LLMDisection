@@ -9,11 +9,12 @@ Phase 1: image/plot generators for every component.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 def _empty_fig(msg: str = "No data") -> go.Figure:
@@ -236,17 +237,21 @@ def plot_vector_bar(
 def plot_weight_matrix(
     mat: Optional[np.ndarray],
     title: str,
-    max_rows: int = 256,
-    max_cols: int = 256,
+    max_dim: int = 512,
 ) -> go.Figure:
-    """2-D heatmap of a weight matrix (subsampled if large)."""
+    """2-D heatmap of a weight matrix (auto-strided if large).
+
+    Shows the full matrix when both dimensions ≤ *max_dim*.
+    When a dimension exceeds *max_dim*, auto-computes a stride to keep
+    the displayed size close to *max_dim*.
+    """
     if mat is None:
         return _empty_fig(title + " (no data)")
 
-    # Subsample if too large
     r, c = mat.shape
-    step_r = max(1, r // max_rows)
-    step_c = max(1, c // max_cols)
+    # Auto-stride: only subsample when needed
+    step_r = max(1, r // max_dim) if r > max_dim else 1
+    step_c = max(1, c // max_dim) if c > max_dim else 1
     sub = mat[::step_r, ::step_c]
 
     fig = go.Figure(
@@ -562,6 +567,69 @@ def plot_rope_rotation(
     return fig
 
 
+# ── RoPE comparison (Q/K pre vs post) ────────────────────────────────────────
+
+
+def plot_rope_comparison(
+    q_pre: np.ndarray,
+    k_pre: np.ndarray,
+    q_post: np.ndarray,
+    k_post: np.ndarray,
+    head: int = 0,
+    kv_head: int = 0,
+    title: str = "Q/K Pre vs Post RoPE",
+) -> go.Figure:
+    """
+    Side-by-side bar charts: Q pre-RoPE, Q post-RoPE, K pre-RoPE, K post-RoPE.
+
+    Parameters
+    ----------
+    q_pre : np.ndarray  shape [num_heads, head_dim] or [head_dim]
+    k_pre : np.ndarray  shape [num_kv_heads, head_dim] or [head_dim]
+    q_post, k_post : same shapes
+    head, kv_head : which head to display
+    title : str
+    """
+    if q_pre.ndim == 2:
+        q_pre_h = q_pre[head]
+        k_pre_h = k_pre[kv_head]
+        q_post_h = q_post[head]
+        k_post_h = k_post[kv_head]
+    else:
+        q_pre_h = q_pre
+        k_pre_h = k_pre
+        q_post_h = q_post
+        k_post_h = k_post
+
+    dims = np.arange(len(q_pre_h))
+
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=("Q pre-RoPE", "Q post-RoPE",
+                        "K pre-RoPE", "K post-RoPE"),
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.08,
+    )
+
+    fig.add_trace(go.Bar(x=dims, y=q_pre_h,  marker_color='#4C72B0', name='Q pre'),  row=1, col=1)
+    fig.add_trace(go.Bar(x=dims, y=q_post_h, marker_color='#DD8452', name='Q post'), row=1, col=2)
+    fig.add_trace(go.Bar(x=dims, y=k_pre_h,  marker_color='#55A868', name='K pre'),  row=2, col=1)
+    fig.add_trace(go.Bar(x=dims, y=k_post_h, marker_color='#C44E52', name='K post'), row=2, col=2)
+
+    fig.update_layout(
+        title=title,
+        height=500,
+        showlegend=False,
+        margin=dict(l=40, r=40, t=60, b=40),
+    )
+    fig.update_xaxes(title_text="Dimension", row=2, col=1)
+    fig.update_xaxes(title_text="Dimension", row=2, col=2)
+    fig.update_yaxes(title_text="Value", row=1, col=1)
+    fig.update_yaxes(title_text="Value", row=2, col=1)
+    return fig
+
+
 # ── RMSNorm comparison ───────────────────────────────────────────────────────
 
 def plot_rmsnorm_comparison(
@@ -602,4 +670,175 @@ def plot_rmsnorm_comparison(
         margin=dict(l=20, r=20, t=40, b=50),
         legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
     )
+    return fig
+
+
+# ── Residual evolution (all layers at once) ──────────────────────────────────
+
+
+def plot_residual_evolution(
+    layers: Dict[int, "LayerSnapshot"],  # noqa: F821 — forward ref acceptable
+    max_dims: int = 100,
+    title: str = "Residual Stream Evolution Across Layers",
+) -> go.Figure:
+    """
+    Three-line overview showing how the residual stream changes across all layers.
+
+    Traces
+    ------
+    - **Pre-Attention** residual input to attention
+    - **Post-Attention** residual (attn output added back)
+    - **Post-MLP** residual (final layer output)
+
+    Bar traces at the bottom show the L2 contribution of attention and MLP
+    at each layer. A rangeslider allows zooming.
+    """
+    if not layers:
+        return _empty_fig("Residual evolution (no layer data)")
+
+    sorted_lids = sorted(layers.keys())
+    n_layers = len(sorted_lids)
+
+    # Collect first max_dims of each residual vector across all layers
+    pre_attn_vals = []
+    post_attn_vals = []
+    post_mlp_vals = []
+    attn_contribs = []
+    mlp_contribs = []
+
+    for lid in sorted_lids:
+        layer = layers[lid]
+        pre = layer.residual_pre_attn
+        post_attn = layer.residual_post_attn
+        post_mlp = layer.residual_post_mlp
+
+        if pre is not None:
+            pre_attn_vals.append(pre[:max_dims])
+        if post_attn is not None:
+            post_attn_vals.append(post_attn[:max_dims])
+        if post_mlp is not None:
+            post_mlp_vals.append(post_mlp[:max_dims])
+
+        # L2 contribution
+        if pre is not None and post_attn is not None:
+            attn_contribs.append(float(np.linalg.norm(post_attn - pre)))
+        else:
+            attn_contribs.append(0.0)
+
+        if post_attn is not None and post_mlp is not None:
+            mlp_contribs.append(float(np.linalg.norm(post_mlp - post_attn)))
+        else:
+            mlp_contribs.append(0.0)
+
+    if not pre_attn_vals:
+        return _empty_fig("Residual evolution (no data)")
+
+    # Build heatmap-style line traces: one line per layer, colored by depth
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.7, 0.3],
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=("Residual Stream Values (first 100 dims)", "Attention Δ and MLP Δ per Layer"),
+    )
+
+    dims = list(range(max_dims))
+
+    # Pre-attention lines (blue gradient)
+    for i, (lid, vals) in enumerate(zip(sorted_lids[:len(pre_attn_vals)], pre_attn_vals)):
+        intensity = 0.3 + 0.7 * (i / max(1, len(pre_attn_vals) - 1))
+        fig.add_trace(
+            go.Scatter(
+                x=dims, y=vals.tolist(),
+                mode="lines",
+                line=dict(width=0.8, color=f"rgba(44, 123, 182, {intensity})"),
+                name=f"L{lid} pre-attn",
+                hovertemplate=f"L{lid} pre-attn<br>Dim %{{x}}: %{{y:.3f}}<extra></extra>",
+                legendgroup="pre-attn",
+                showlegend=(i == 0),
+            ),
+            row=1, col=1,
+        )
+
+    # Post-attention lines (orange gradient)
+    for i, (lid, vals) in enumerate(zip(sorted_lids[:len(post_attn_vals)], post_attn_vals)):
+        intensity = 0.3 + 0.7 * (i / max(1, len(post_attn_vals) - 1))
+        fig.add_trace(
+            go.Scatter(
+                x=dims, y=vals.tolist(),
+                mode="lines",
+                line=dict(width=0.8, color=f"rgba(221, 132, 82, {intensity})"),
+                name=f"L{lid} post-attn",
+                hovertemplate=f"L{lid} post-attn<br>Dim %{{x}}: %{{y:.3f}}<extra></extra>",
+                legendgroup="post-attn",
+                showlegend=(i == 0),
+            ),
+            row=1, col=1,
+        )
+
+    # Post-MLP lines (green gradient)
+    for i, (lid, vals) in enumerate(zip(sorted_lids[:len(post_mlp_vals)], post_mlp_vals)):
+        intensity = 0.3 + 0.7 * (i / max(1, len(post_mlp_vals) - 1))
+        fig.add_trace(
+            go.Scatter(
+                x=dims, y=vals.tolist(),
+                mode="lines",
+                line=dict(width=0.8, color=f"rgba(85, 168, 104, {intensity})"),
+                name=f"L{lid} post-mlp",
+                hovertemplate=f"L{lid} post-mlp<br>Dim %{{x}}: %{{y:.3f}}<extra></extra>",
+                legendgroup="post-mlp",
+                showlegend=(i == 0),
+            ),
+            row=1, col=1,
+        )
+
+    # Bar chart: attention Δ and MLP Δ
+    layer_labels = [str(lid) for lid in sorted_lids]
+    fig.add_trace(
+        go.Bar(
+            x=layer_labels[:len(attn_contribs)],
+            y=attn_contribs,
+            name="Attention Δ",
+            marker_color="#DD8452",
+            hovertemplate="Layer %{x}<br>Attn Δ: %{y:.4f}<extra></extra>",
+        ),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=layer_labels[:len(mlp_contribs)],
+            y=mlp_contribs,
+            name="MLP Δ",
+            marker_color="#55A868",
+            hovertemplate="Layer %{x}<br>MLP Δ: %{y:.4f}<extra></extra>",
+        ),
+        row=2, col=1,
+    )
+
+    fig.update_layout(
+        title=title,
+        height=600,
+        hovermode="closest",
+        margin=dict(l=40, r=20, t=60, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=9),
+        ),
+        barmode="group",
+    )
+
+    # Rangeslider on the main plot
+    fig.update_xaxes(
+        title_text="Dimension",
+        row=1, col=1,
+        rangeslider=dict(visible=True, thickness=0.05),
+    )
+    fig.update_xaxes(title_text="Layer", row=2, col=1)
+    fig.update_yaxes(title_text="Value", row=1, col=1)
+    fig.update_yaxes(title_text="L2 Norm", row=2, col=1)
+
     return fig

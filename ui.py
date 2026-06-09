@@ -26,12 +26,12 @@ from plots import (
     plot_mlp_activation,
     plot_qkv_vector,
     plot_residual_delta,
+    plot_residual_evolution,
+    plot_rope_comparison,
     plot_rope_rotation,
     plot_rmsnorm_comparison,
     plot_silu_scatter,
-    plot_top_logits,
     plot_topk,
-    plot_vector_bar,
     plot_weight_matrix,
 )
 
@@ -65,7 +65,7 @@ def _ensure_loaded():
 # The UI has many output components. We define a fixed-length tuple so
 # callbacks always return exactly the right number of values.
 
-_NUM_OUTPUTS = 31  # total gr outputs
+_NUM_OUTPUTS = 33  # total gr outputs
 
 # Output indices (for readability)
 _O_TEXT = 0
@@ -99,7 +99,9 @@ _O_GATE_WEIGHT = 26
 _O_UP_WEIGHT = 27
 _O_DOWN_WEIGHT = 28
 _O_CONTRIB = 29
-_O_STATE = 30
+_O_ROPE_COMP = 30
+_O_RESIDUAL_EVOL = 31
+_O_STATE = 32
 
 
 def _default_outputs() -> Tuple:
@@ -113,7 +115,7 @@ def _default_outputs() -> Tuple:
         gr.Slider(value=0, maximum=0),  # attn_head
         gr.Slider(value=0, maximum=0),  # qkv_layer
         gr.Slider(value=0, maximum=0),  # mlp_layer
-    ) + tuple([empty] * 23) + (gr.State(False),)
+    ) + tuple([empty] * 25) + (gr.State(False),)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,6 +367,22 @@ def _build_all_outputs(
         else _empty_fig("Layer contributions (run Generate first)")
     )
 
+    # ── RoPE comparison (Q/K pre vs post) ──
+    rope_comp_fig = _empty_fig("RoPE comparison (no data)")
+    if (layer is not None
+            and layer.q_pre_rope is not None
+            and layer.q_post_rope is not None):
+        # Clamp head indices
+        num_kv_heads = layer.k_pre_rope.shape[0] if layer.k_pre_rope.ndim == 2 else 1
+        rope_h = min(int(head_idx), max_head) if head_idx is not None else 0
+        rope_kv_h = min(rope_h, num_kv_heads - 1)
+        rope_comp_fig = plot_rope_comparison(
+            layer.q_pre_rope, layer.k_pre_rope,
+            layer.q_post_rope, layer.k_post_rope,
+            head=rope_h, kv_head=rope_kv_h,
+            title=f"Q/K Pre vs Post RoPE — Layer {layer_idx}, Head {rope_h}",
+        )
+
     # ── Top-K and logits ──
     topk_fig = (
         plot_topk(step.topk_tokens, step.topk_probs)
@@ -387,6 +405,11 @@ def _build_all_outputs(
         if step.input_embeds is not None
         else _empty_fig("Embedding (no data)")
     )
+
+    # ── Residual Evolution (all layers at once) ──
+    residual_evol_fig = _empty_fig("Residual evolution (no data)")
+    if step.layers:
+        residual_evol_fig = plot_residual_evolution(step.layers)
 
     # Build output tuple
     return (
@@ -420,7 +443,9 @@ def _build_all_outputs(
         up_w_fig,                # 27
         down_w_fig,              # 28
         contrib_fig,             # 29: contributions
-        gr.State(True),          # 30: state
+        rope_comp_fig,           # 30: RoPE comparison
+        residual_evol_fig,       # 31: residual evolution
+        gr.State(True),          # 32: state
     )
 
 
@@ -623,9 +648,20 @@ def create_ui():
                             rope_pos_slider = gr.Slider(0, 128, value=0, step=1, label="Position")
                         rope_plot = gr.Plot(label="RoPE Rotation (pairs of dimensions)")
 
+                    # ── RoPE Comparison tab ──
+                    with gr.TabItem("🔄 Q/K Pre vs Post RoPE"):
+                        with gr.Row():
+                            rope_comp_layer = gr.Slider(0, 1, value=0, step=1, label="Layer", scale=1)
+                            rope_comp_head = gr.Slider(0, 1, value=0, step=1, label="Head", scale=1)
+                        rope_comp_plot = gr.Plot(label="Q/K Pre vs Post RoPE")
+
                     # ── Contributions tab ──
                     with gr.TabItem("📊 Contributions"):
                         contrib_plot = gr.Plot(label="Layer Contributions (L2 Norm)")
+
+                    # ── Residual Evolution tab ──
+                    with gr.TabItem("📈 Residual Evolution"):
+                        residual_evol_plot = gr.Plot(label="Residual Stream Across All Layers")
 
         # ── Bottom row: probabilities ──
         with gr.Row():
@@ -650,6 +686,7 @@ def create_ui():
             embed_plot,
             o_weight_plot, gate_weight_plot, up_weight_plot, down_weight_plot,
             contrib_plot,
+            rope_comp_plot, residual_evol_plot,
             state,
         ]
 
@@ -702,6 +739,17 @@ def create_ui():
             fn=on_rope_pos,
             inputs=[rope_pos_slider],
             outputs=[rope_plot],
+        )
+
+        rope_comp_layer.change(
+            fn=on_change_layer,
+            inputs=[token_selector, rope_comp_layer, rope_comp_head],
+            outputs=all_outputs,
+        )
+        rope_comp_head.change(
+            fn=on_change_layer,
+            inputs=[token_selector, rope_comp_layer, rope_comp_head],
+            outputs=all_outputs,
         )
 
         reset_btn.click(
