@@ -1,46 +1,69 @@
 @echo off
-REM run.bat — Launch the Qwen2.5-0.5B Visual Step-Through Explorer
-REM            and open the browser automatically.
-REM
-REM Usage:
-REM   run.bat           use default port 7860
-REM   run.bat 8080      use a custom port
+setlocal
 
-setlocal enabledelayedexpansion
+:: =============================================================================
+:: Qwen2.5-0.5B Visual Step-Through Explorer — Windows Launcher
+:: =============================================================================
 
-set PORT=%1
-if "%PORT%"=="" set PORT=7860
+title Qwen2.5-0.5B Visual Step-Through Explorer
 
 echo ==============================================
 echo   Qwen2.5-0.5B Visual Step-Through Explorer
 echo ==============================================
 echo.
 
-REM ── Python environment ──────────────────────────
-if exist venv\Scripts\activate.bat (
-    echo [*] Activating virtual environment (venv) ...
-    call venv\Scripts\activate.bat
-) else if exist .venv\Scripts\activate.bat (
-    echo [*] Activating virtual environment (.venv) ...
-    call .venv\Scripts\activate.bat
-)
-
-REM ── Dependencies (one-time) ─────────────────────
-python -c "import torch, transformers, gradio, plotly" 2>nul
+:: --- Locate Python ---
+set "PYTHON_CMD=python"
+where python >nul 2>&1
 if errorlevel 1 (
-    echo [*] Installing dependencies ...
-    pip install --quiet torch transformers gradio plotly
+    where python3 >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Python not found. Install Python 3.10+ and try again.
+        pause
+        exit /b 1
+    )
+    set "PYTHON_CMD=python3"
 )
 
-REM ── Launch ──────────────────────────────────────
-echo [*] Starting server on port %PORT% ...
-echo [*] Open http://localhost:%PORT% in your browser.
+echo [*] Using: %PYTHON_CMD%
+
+:: --- Check version ---
+setlocal enabledelayedexpansion
+for /f "tokens=2 delims=." %%v in ('%PYTHON_CMD% --version 2^>^&1') do (
+    set "PY_MAJOR=%%v"
+    goto :version_checked
+)
+:version_checked
+if "!PY_MAJOR!" LSS "10" (
+    echo [ERROR] Python 3.10+ required, found Python 3.!PY_MAJOR!
+    pause
+    exit /b 1
+)
+endlocal
+
+:: --- Install missing dependencies ---
+echo [*] Checking dependencies...
+%PYTHON_CMD% -c "import torch, transformers, gradio, plotly, numpy" >nul 2>&1
+if errorlevel 1 (
+    echo [*] Installing required packages...
+    %PYTHON_CMD% -m pip install --upgrade pip -q
+    %PYTHON_CMD% -m pip install torch transformers gradio plotly numpy -q
+    if errorlevel 1 (
+        echo [ERROR] pip install failed.
+        pause
+        exit /b 1
+    )
+    echo [*] Dependencies installed.
+)
+
+echo.
+echo [*] Starting server...
+echo [*] Open http://localhost:7860 in your browser
 echo.
 
-REM Open browser after a short delay
-timeout /t 3 /nobreak >nul
-start http://localhost:%PORT%
+:: --- Launch app and open browser ---
+start "" http://localhost:7860
+%PYTHON_CMD% app.py
 
-python app.py --port %PORT%
-
-endlocal
+echo.
+pause
