@@ -63,7 +63,7 @@ def _ensure_loaded():
 # The UI has many output components. We define a fixed-length tuple so
 # callbacks always return exactly the right number of values.
 
-_NUM_OUTPUTS = 30  # total gr outputs
+_NUM_OUTPUTS = 31  # total gr outputs
 
 # Output indices (for readability)
 _O_TEXT = 0
@@ -96,7 +96,8 @@ _O_O_WEIGHT = 25
 _O_GATE_WEIGHT = 26
 _O_UP_WEIGHT = 27
 _O_DOWN_WEIGHT = 28
-_O_STATE = 29
+_O_CONTRIB = 29
+_O_STATE = 30
 
 
 def _default_outputs() -> Tuple:
@@ -110,7 +111,7 @@ def _default_outputs() -> Tuple:
         gr.Slider(value=0, maximum=0),  # attn_head
         gr.Slider(value=0, maximum=0),  # qkv_layer
         gr.Slider(value=0, maximum=0),  # mlp_layer
-    ) + tuple([empty] * 22) + (gr.State(False),)
+    ) + tuple([empty] * 23) + (gr.State(False),)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -344,6 +345,24 @@ def _build_all_outputs(
         else _empty_fig("Residual (run Generate first)")
     )
 
+    # ── Layer contributions (all layers) ──
+    layer_contribs = None
+    if step.layers:
+        contribs = []
+        for lid in sorted(step.layers.keys()):
+            l = step.layers[lid]
+            if (l.residual_pre_attn is not None and l.residual_post_mlp is not None):
+                delta = l.residual_post_mlp - l.residual_pre_attn
+                contribs.append(float(np.linalg.norm(delta)))
+            else:
+                contribs.append(0.0)
+        layer_contribs = contribs if any(c > 0 for c in contribs) else None
+    contrib_fig = (
+        plot_layer_contributions(layer_contribs)
+        if layer_contribs is not None
+        else _empty_fig("Layer contributions (run Generate first)")
+    )
+
     # ── Top-K and logits ──
     topk_fig = (
         plot_topk(step.topk_tokens, step.topk_probs)
@@ -398,7 +417,8 @@ def _build_all_outputs(
         gate_w_fig,              # 26
         up_w_fig,                # 27
         down_w_fig,              # 28
-        gr.State(True),          # 29: state
+        contrib_fig,             # 29: contributions
+        gr.State(True),          # 30: state
     )
 
 
@@ -582,6 +602,10 @@ def create_ui():
                     with gr.TabItem("🔤 Embedding"):
                         embed_plot = gr.Plot(label="Token Embedding")
 
+                    # ── Contributions tab ──
+                    with gr.TabItem("📊 Contributions"):
+                        contrib_plot = gr.Plot(label="Layer Contributions (L2 Norm)")
+
         # ── Bottom row: probabilities ──
         with gr.Row():
             topk_plot = gr.Plot(label="Top-K Token Probabilities", scale=1)
@@ -604,6 +628,7 @@ def create_ui():
             topk_plot, logit_plot,
             embed_plot,
             o_weight_plot, gate_weight_plot, up_weight_plot, down_weight_plot,
+            contrib_plot,
             state,
         ]
 
