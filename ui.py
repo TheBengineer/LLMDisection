@@ -63,7 +63,7 @@ def _ensure_loaded():
 # The UI has many output components. We define a fixed-length tuple so
 # callbacks always return exactly the right number of values.
 
-_NUM_OUTPUTS = 26  # total gr outputs
+_NUM_OUTPUTS = 30  # total gr outputs
 
 # Output indices (for readability)
 _O_TEXT = 0
@@ -92,7 +92,11 @@ _O_RESIDUAL = 21
 _O_TOPK = 22
 _O_LOGITS = 23
 _O_EMBED = 24
-_O_STATE = 25
+_O_O_WEIGHT = 25
+_O_GATE_WEIGHT = 26
+_O_UP_WEIGHT = 27
+_O_DOWN_WEIGHT = 28
+_O_STATE = 29
 
 
 def _default_outputs() -> Tuple:
@@ -106,7 +110,7 @@ def _default_outputs() -> Tuple:
         gr.Slider(value=0, maximum=0),  # attn_head
         gr.Slider(value=0, maximum=0),  # qkv_layer
         gr.Slider(value=0, maximum=0),  # mlp_layer
-    ) + tuple([empty] * 18) + (gr.State(False),)
+    ) + tuple([empty] * 22) + (gr.State(False),)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +258,26 @@ def _build_all_outputs(
         if layer and layer.v_weight is not None
         else _empty_fig("V weight (not captured)")
     )
+    o_w_fig = (
+        plot_weight_matrix(layer.o_weight, f"O Weight — Layer {layer_idx}")
+        if layer and layer.o_weight is not None
+        else _empty_fig("O weight (not captured)")
+    )
+    gate_w_fig = (
+        plot_weight_matrix(layer.gate_weight, f"Gate Weight — Layer {layer_idx}")
+        if layer and layer.gate_weight is not None
+        else _empty_fig("Gate weight (not captured)")
+    )
+    up_w_fig = (
+        plot_weight_matrix(layer.up_weight, f"Up Weight — Layer {layer_idx}")
+        if layer and layer.up_weight is not None
+        else _empty_fig("Up weight (not captured)")
+    )
+    down_w_fig = (
+        plot_weight_matrix(layer.down_weight, f"Down Weight — Layer {layer_idx}")
+        if layer and layer.down_weight is not None
+        else _empty_fig("Down weight (not captured)")
+    )
 
     # ── MLP plots ──
     gate_fig = (
@@ -370,23 +394,34 @@ def _build_all_outputs(
         topk_fig,                # 22
         logit_fig,               # 23
         embed_fig,               # 24
-        gr.State(True),          # 25: state
+        o_w_fig,                 # 25
+        gate_w_fig,              # 26
+        up_w_fig,                # 27
+        down_w_fig,              # 28
+        gr.State(True),          # 29: state
     )
 
 
 def _build_qkv_outputs(token_idx: int, layer_idx: int) -> Tuple:
-    """Return only Q/K/V plot updates (3 plots)."""
+    """Return Q/K/V plot updates + weight matrices (10 plots)."""
     explorer = controller.explorer
     if explorer is None or not controller.ready:
-        return _empty_fig("Q"), _empty_fig("K"), _empty_fig("V")
+        return tuple([_empty_fig(x) for x in ("Q", "K", "V",
+                     "Q weight", "K weight", "V weight",
+                     "O weight", "Gate weight", "Up weight", "Down weight")])
 
     step = explorer.get_step(int(token_idx))
     if step is None:
-        return _empty_fig("Q"), _empty_fig("K"), _empty_fig("V")
+        return tuple([_empty_fig(x) for x in ("Q", "K", "V",
+                     "Q weight", "K weight", "V weight",
+                     "O weight", "Gate weight", "Up weight", "Down weight")])
 
     layer_idx = min(int(layer_idx), explorer.num_layers - 1)
     layer = step.layers.get(layer_idx)
     head_dim = explorer.head_dim
+
+    def _w(mat, label):
+        return plot_weight_matrix(mat, f"{label} — Layer {layer_idx}") if mat is not None else _empty_fig(f"{label} (not captured)")
 
     q_fig = (
         plot_qkv_vector(layer.q, f"Q — Layer {layer_idx}", head_dim)
@@ -403,7 +438,15 @@ def _build_qkv_outputs(token_idx: int, layer_idx: int) -> Tuple:
         if layer and layer.v is not None
         else _empty_fig("V (not captured)")
     )
-    return q_fig, k_fig, v_fig
+    qw_fig = _w(layer.q_weight if layer else None, "Q Weight")
+    kw_fig = _w(layer.k_weight if layer else None, "K Weight")
+    vw_fig = _w(layer.v_weight if layer else None, "V Weight")
+    ow_fig = _w(layer.o_weight if layer else None, "O Weight")
+    gw_fig = _w(layer.gate_weight if layer else None, "Gate Weight")
+    uw_fig = _w(layer.up_weight if layer else None, "Up Weight")
+    dw_fig = _w(layer.down_weight if layer else None, "Down Weight")
+
+    return q_fig, k_fig, v_fig, qw_fig, kw_fig, vw_fig, ow_fig, gw_fig, uw_fig, dw_fig
 
 
 def _build_mlp_outputs(token_idx: int, layer_idx: int) -> Tuple:
@@ -509,6 +552,11 @@ def create_ui():
                             q_weight_plot = gr.Plot(label="Q Weight")
                             k_weight_plot = gr.Plot(label="K Weight")
                             v_weight_plot = gr.Plot(label="V Weight")
+                        with gr.Row():
+                            o_weight_plot = gr.Plot(label="O Weight")
+                            gate_weight_plot = gr.Plot(label="Gate Weight")
+                            up_weight_plot = gr.Plot(label="Up Weight")
+                            down_weight_plot = gr.Plot(label="Down Weight")
 
                     # ── MLP tab ──
                     with gr.TabItem("⚙️ MLP"):
@@ -555,6 +603,7 @@ def create_ui():
             residual_plot,
             topk_plot, logit_plot,
             embed_plot,
+            o_weight_plot, gate_weight_plot, up_weight_plot, down_weight_plot,
             state,
         ]
 
@@ -592,7 +641,9 @@ def create_ui():
         qkv_layer_slider.change(
             fn=on_change_qkv_layer,
             inputs=[token_selector, qkv_layer_slider],
-            outputs=[q_plot, k_plot, v_plot],
+            outputs=[q_plot, k_plot, v_plot,
+                     q_weight_plot, k_weight_plot, v_weight_plot,
+                     o_weight_plot, gate_weight_plot, up_weight_plot, down_weight_plot],
         )
 
         mlp_layer_slider.change(
