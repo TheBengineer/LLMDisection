@@ -104,6 +104,7 @@ class QwenExplorer:
         # Model dimensions (filled by load())
         self.num_layers = 0
         self.num_heads = 0
+        self.num_kv_heads = 0
         self.head_dim = 0
         self.hidden_size = 0
         self.intermediate_size = 0
@@ -127,11 +128,12 @@ class QwenExplorer:
         cfg = self.model.config
         self.num_layers = cfg.num_hidden_layers
         self.num_heads = cfg.num_attention_heads
+        self.num_kv_heads = getattr(cfg, 'num_key_value_heads', self.num_heads)
         self.head_dim = cfg.hidden_size // cfg.num_attention_heads
         self.hidden_size = cfg.hidden_size
         self.intermediate_size = cfg.intermediate_size
 
-        print(f"    {self.num_layers} layers, {self.num_heads} heads, "
+        print(f"    {self.num_layers} layers, {self.num_heads} heads ({self.num_kv_heads} KV heads), "
               f"hidden={self.hidden_size}, intermediate={self.intermediate_size}")
 
         if self.tokenizer.pad_token is None:
@@ -521,13 +523,13 @@ def plot_topk(tokens: List[str], probs: List[float]) -> go.Figure:
 
 
 def plot_qkv_vector(vec: np.ndarray, title: str,
-                    num_heads: int = 12) -> go.Figure:
+                    head_dim: int = 64) -> go.Figure:
     """Show a Q/K/V vector as a reshaped head×dim heatmap."""
     if vec is None:
         return _empty_fig(title + " (no data)")
 
     hidden = vec.shape[0]
-    head_dim = hidden // num_heads
+    num_heads = hidden // head_dim
     reshaped = vec.reshape(num_heads, head_dim)
 
     fig = go.Figure(data=go.Heatmap(
@@ -729,9 +731,9 @@ def _build_all_outputs(token_idx: int, layer_idx: int = 0, head_idx: int = 0):
     # QKV (show Q for this layer)
     q_fig = k_fig = v_fig = _empty_fig("Q/K/V (run Generate first)")
     if layer:
-        q_fig = plot_qkv_vector(layer.q, f"Q — Layer {layer_idx}", explorer.num_heads) if layer.q is not None else _empty_fig("Q (not captured)")
-        k_fig = plot_qkv_vector(layer.k, f"K — Layer {layer_idx}", explorer.num_heads) if layer.k is not None else _empty_fig("K (not captured)")
-        v_fig = plot_qkv_vector(layer.v, f"V — Layer {layer_idx}", explorer.num_heads) if layer.v is not None else _empty_fig("V (not captured)")
+        q_fig = plot_qkv_vector(layer.q, f"Q — Layer {layer_idx}", explorer.head_dim) if layer.q is not None else _empty_fig("Q (not captured)")
+        k_fig = plot_qkv_vector(layer.k, f"K — Layer {layer_idx}", explorer.head_dim) if layer.k is not None else _empty_fig("K (not captured)")
+        v_fig = plot_qkv_vector(layer.v, f"V — Layer {layer_idx}", explorer.head_dim) if layer.v is not None else _empty_fig("V (not captured)")
 
     # MLP
     gate_fig = (plot_mlp_activation(layer.mlp_gate, f"Gate — Layer {layer_idx}")
@@ -776,9 +778,9 @@ def _build_qkv_outputs(token_idx: int, layer_idx: int):
     layer_idx = min(int(layer_idx), explorer.num_layers - 1)
     layer = step.layers.get(layer_idx)
 
-    q_fig = plot_qkv_vector(layer.q, f"Q — Layer {layer_idx}", explorer.num_heads) if layer and layer.q is not None else _empty_fig("Q (not captured)")
-    k_fig = plot_qkv_vector(layer.k, f"K — Layer {layer_idx}", explorer.num_heads) if layer and layer.k is not None else _empty_fig("K (not captured)")
-    v_fig = plot_qkv_vector(layer.v, f"V — Layer {layer_idx}", explorer.num_heads) if layer and layer.v is not None else _empty_fig("V (not captured)")
+    q_fig = plot_qkv_vector(layer.q, f"Q — Layer {layer_idx}", explorer.head_dim) if layer and layer.q is not None else _empty_fig("Q (not captured)")
+    k_fig = plot_qkv_vector(layer.k, f"K — Layer {layer_idx}", explorer.head_dim) if layer and layer.k is not None else _empty_fig("K (not captured)")
+    v_fig = plot_qkv_vector(layer.v, f"V — Layer {layer_idx}", explorer.head_dim) if layer and layer.v is not None else _empty_fig("V (not captured)")
     return q_fig, k_fig, v_fig
 
 
