@@ -7,11 +7,13 @@ detail panel (right) replaces the old tabbed layout.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import gradio as gr
 import plotly.graph_objects as go
 
+from data_structures import StepSnapshot
 from engine import QwenExplorer
 from flowchart import (
     FlowchartNode,
@@ -25,6 +27,7 @@ from plots import (
     plot_embedding_slice,
     plot_histogram,
     plot_layer_contributions,
+    plot_logits_sampled,
     plot_mlp_activation,
     plot_qkv_vector,
     plot_residual_delta,
@@ -33,7 +36,9 @@ from plots import (
     plot_rope_rotation,
     plot_rmsnorm_comparison,
     plot_silu_scatter,
+    plot_top_logits,
     plot_topk,
+    plot_vector_bar,
     plot_weight_matrix,
 )
 
@@ -51,6 +56,7 @@ class UIController:
         self.node_tree: dict[str, FlowchartNode] = {}
         self.active_node_id: Optional[str] = None
         self.collapsed: set[str] = set()
+        self.thumbnails: dict[str, str] = {}
 
     @property
     def current_svg(self) -> str:
@@ -58,11 +64,46 @@ class UIController:
         return render_flowchart_svg(
             nodes=self.node_tree,
             active_node_id=self.active_node_id,
+            thumbnails=self.thumbnails,
             collapsed_override=self.collapsed,
         )
 
+    @property
+    def latest_step_idx(self) -> int:
+        """Index of the most recent step, or 0."""
+        if self.explorer is not None:
+            return max(0, self.explorer.num_steps() - 1)
+        return 0
+
+    def get_snapshot(self, step_idx: int | None = None) -> StepSnapshot | None:
+        """Return a StepSnapshot (latest by default)."""
+        if self.explorer is None or self.explorer.num_steps() == 0:
+            return None
+        idx = step_idx if step_idx is not None else self.latest_step_idx
+        return self.explorer.get_step(idx)
+
 
 controller = UIController()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LAYER_ID_RE = re.compile(r"layer_(\d+)")
+
+
+def _parse_layer_idx(node_id: str) -> int | None:
+    """Extract the layer index from a node id like ``layer_12_q_proj``."""
+    m = _LAYER_ID_RE.search(node_id)
+    return int(m.group(1)) if m else None
+
+
+def _get_token_labels() -> list[str]:
+    """Return decoded token strings from the current explorer state."""
+    if controller.explorer is not None:
+        return controller.explorer.get_token_labels()
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,77 +148,181 @@ def _get_node_title(node_id: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Plot dispatch  (Task 3.4)
+#  Plot dispatch  (Task 3.4, fixed: extract tensors per node type)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Map plot_fn names (from FlowchartNode) → plot functions
-PLOT_DISPATCH: dict[str, callable] = {
-    "embedding": plot_embedding_slice,
-    "rmsnorm": plot_rmsnorm_comparison,
-    "attention": plot_attention_scores,
-    "attention_scores": plot_attention_scores,
-    "attention_probs": plot_attention,
-    "mlp": plot_mlp_activation,
-    "residual": plot_residual_delta,
-    "linear": plot_weight_matrix,
-    "activation": plot_silu_scatter,
-    "softmax": plot_attention_scores,
-    "output": plot_topk,
-    "qkv": plot_qkv_vector,
-    "rope": plot_rope_rotation,
-    "logits": plot_topk,
-    "histogram": plot_histogram,
-    "silu_scatter": plot_silu_scatter,
-    "layer_contributions": plot_layer_contributions,
-    "residual_evolution": plot_residual_evolution,
-    "rope_comparison": plot_rope_comparison,
-}
 
-# Fallback by node_type
-NODE_TYPE_PLOT: dict[str, callable] = {
-    "embedding": plot_embedding_slice,
-    "rmsnorm": plot_rmsnorm_comparison,
-    "attention": plot_attention_scores,
-    "mlp": plot_mlp_activation,
-    "residual": plot_residual_delta,
-    "linear": plot_weight_matrix,
-    "activation": plot_silu_scatter,
-    "softmax": plot_attention_scores,
-    "output": plot_topk,
-}
+def _dispatch_plot(node_id: str) -> go.Figure:
+    """
+    Map a node ID to the appropriate plot function, extracting the right
+    tensors from the current StepSnapshot.
 
-
-def _dispatch_plot(node_id: str, snapshot) -> go.Figure:
-    """Map a node ID to the appropriate plot function.
-
-    Priority:
-      1. plot_fn name (from FlowchartNode) into PLOT_DISPATCH
-      2. node_type into NODE_TYPE_PLOT
-      3. Empty figure fallback.
+    Each node type / node_id pattern maps to a specific plot call with the
+    correct arguments extracted from the snapshot.
     """
     node = controller.node_tree.get(node_id)
     if not node:
         return _empty_fig("Unknown component.")
 
-    # Try plot_fn first
-    if node.plot_fn and node.plot_fn in PLOT_DISPATCH:
-        fn = PLOT_DISPATCH[node.plot_fn]
-        try:
-            fig = fn(snapshot)
-            if fig is not None:
-                return fig
-        except Exception:
-            pass
+    snapshot = controller.get_snapshot()
+    labels = _get_token_labels()
 
-    # Fallback by node_type
-    if node.node_type in NODE_TYPE_PLOT:
-        fn = NODE_TYPE_PLOT[node.node_type]
-        try:
-            fig = fn(snapshot)
-            if fig is not None:
-                return fig
-        except Exception:
-            pass
+    # ── Helper: get a single layer's snapshot ──
+    def _layer(lidx: int) -> Optional:
+        if snapshot is None:
+            return None
+        return snapshot.layers.get(lidx)
+
+    try:
+        # ── Root → layer contributions overview ──
+        if node_id == "root":
+            if snapshot is not None:
+                return plot_layer_contributions(snapshot)
+            return _empty_fig("Press Generate to start.")
+
+        # ── Token Embedding ──
+        if node_id == "token_embedding":
+            if snapshot is not None and snapshot.token_embeddings is not None:
+                return plot_embedding_slice(
+                    snapshot.token_embeddings,
+                    token_id=snapshot.token_id,
+                )
+            return _empty_fig("Token embedding — no data (generate first).")
+
+        # ── Layer-based dispatch ──
+        lidx = _parse_layer_idx(node_id)
+        layer = _layer(lidx) if lidx is not None else None
+
+        # ── Attention weight matrices ──
+        if node_id.endswith("_q_proj"):
+            if layer and layer.q_weight is not None:
+                return plot_weight_matrix(layer.q_weight, "Q Projection")
+            return _empty_fig("Q weight — static; not yet captured.")
+        if node_id.endswith("_k_proj"):
+            if layer and layer.k_weight is not None:
+                return plot_weight_matrix(layer.k_weight, "K Projection")
+            return _empty_fig("K weight — static; not yet captured.")
+        if node_id.endswith("_v_proj"):
+            if layer and layer.v_weight is not None:
+                return plot_weight_matrix(layer.v_weight, "V Projection")
+            return _empty_fig("V weight — static; not yet captured.")
+        if node_id.endswith("_o_proj"):
+            if layer and layer.o_weight is not None:
+                return plot_weight_matrix(layer.o_weight, "O Projection")
+            return _empty_fig("O weight — static; not yet captured.")
+
+        # ── RoPE comparison (Q/K pre vs post) ──
+        if "_rope" in node_id and "rope_comparison" not in node_id:
+            if layer is not None and layer.q_pre_rope is not None:
+                return plot_rope_comparison(
+                    layer.q_pre_rope,
+                    layer.k_pre_rope,
+                    layer.q_post_rope,
+                    layer.k_post_rope,
+                )
+            return _empty_fig("RoPE — no data (step through a token).")
+
+        # ── Attention scores (pre-softmax) ──
+        if node_id.endswith("_attn_scores"):
+            if layer is not None and layer.attn_scores is not None:
+                return plot_attention_scores(layer.attn_scores, labels, lidx, 0)
+            return _empty_fig("Attention scores — no data.")
+
+        # ── Attention weights (post-softmax) ──
+        if node_id.endswith("_attn_weights"):
+            if layer is not None and layer.attn_probs is not None:
+                return plot_attention(layer.attn_probs, labels, lidx, 0)
+            return _empty_fig("Attention weights — no data.")
+
+        # ── RMSNorm ──
+        if node_id.endswith("_pre_attn_rmsnorm"):
+            if layer is not None and layer.residual_pre_attn is not None:
+                return plot_rmsnorm_comparison(
+                    layer.residual_pre_attn, layer.input_layernorm_output
+                )
+            return _empty_fig("Pre-attention RMSNorm — no data.")
+        if node_id.endswith("_pre_mlp_rmsnorm"):
+            if layer is not None and layer.residual_post_attn is not None:
+                return plot_rmsnorm_comparison(
+                    layer.residual_post_attn, layer.post_attention_layernorm_output
+                )
+            return _empty_fig("Pre-MLP RMSNorm — no data.")
+
+        # ── Residual connections ──
+        if node_id.endswith("_post_attn_residual"):
+            if layer is not None:
+                return plot_residual_delta(
+                    layer.residual_pre_attn, layer.residual_post_attn,
+                    title="Post-Attention Residual",
+                )
+            return _empty_fig("Post-attention residual — no data.")
+        if node_id.endswith("_post_mlp_residual"):
+            if layer is not None:
+                return plot_residual_delta(
+                    layer.residual_post_attn, layer.residual_post_mlp,
+                    title="Post-MLP Residual",
+                )
+            return _empty_fig("Post-MLP residual — no data.")
+
+        # ── MLP sub-nodes ──
+        if node_id.endswith("_gate_proj"):
+            if layer is not None and layer.mlp_gate_raw is not None:
+                return plot_histogram(layer.mlp_gate_raw, "Gate Projection (pre-SiLU)")
+            return _empty_fig("Gate projection — no data.")
+        if node_id.endswith("_silu"):
+            if layer is not None and layer.mlp_gate_raw is not None:
+                return plot_silu_scatter(layer.mlp_gate_raw, layer.mlp_gate_silu)
+            return _empty_fig("SiLU activation — no data.")
+        if node_id.endswith("_up_proj"):
+            if layer and layer.up_weight is not None:
+                return plot_weight_matrix(layer.up_weight, "Up Projection")
+            return _empty_fig("Up weight — static; not yet captured.")
+        if node_id.endswith("_down_proj"):
+            if layer and layer.down_weight is not None:
+                return plot_weight_matrix(layer.down_weight, "Down Projection")
+            return _empty_fig("Down weight — static; not yet captured.")
+        if node_id.endswith("_mlp_out"):
+            if layer is not None and layer.mlp_output is not None:
+                return plot_mlp_activation(layer.mlp_output, "MLP Output")
+            return _empty_fig("MLP output — no data.")
+
+        # ── Final RMSNorm ──
+        if node_id == "final_rmsnorm":
+            if snapshot is not None and snapshot.final_norm_output is not None:
+                # Compare last layer's post-mlp residual with final norm output
+                last_lid = max(snapshot.layers.keys(), default=0)
+                last_layer = snapshot.layers.get(last_lid)
+                if last_layer and last_layer.residual_post_mlp is not None:
+                    return plot_rmsnorm_comparison(
+                        last_layer.residual_post_mlp,
+                        snapshot.final_norm_output,
+                        title="Final RMSNorm",
+                    )
+                return plot_vector_bar(snapshot.final_norm_output, "Final RMSNorm Output")
+            return _empty_fig("Final RMSNorm — no data.")
+
+        # ── LM Head / Logits ──
+        if node_id == "lm_head":
+            if snapshot is not None:
+                return plot_topk(snapshot.topk_tokens, snapshot.topk_probs)
+            return _empty_fig("LM Head — no data.")
+
+        # ── Fallback by node_type ──
+        if node.node_type == "linear" and lidx is not None and layer is not None:
+            # Generic linear: try to find any weight
+            for attr in ("q_weight", "k_weight", "v_weight", "o_weight",
+                         "gate_weight", "up_weight", "down_weight"):
+                w = getattr(layer, attr, None)
+                if w is not None:
+                    return plot_weight_matrix(w, node.label)
+        if node.node_type == "residual" and lidx is not None and layer is not None:
+            return plot_residual_delta(
+                layer.residual_pre_attn, layer.residual_post_mlp,
+                title=node.label,
+            )
+
+    except Exception as e:
+        return _empty_fig(f"Plot error: {e}")
 
     return _empty_fig("No plot available for this component.")
 
@@ -202,11 +347,30 @@ def _ensure_loaded():
 
 _NUM_OUTPUTS = 4  # flowchart_html, detail_plot, detail_title, detail_description
 
-# Output indices
 _O_SVG = 0
 _O_PLOT = 1
 _O_TITLE = 2
 _O_DESC = 3
+
+
+def _build_response() -> tuple:
+    """Build the 4-part output tuple for the current UI state."""
+    svg = controller.current_svg
+    snapshot = controller.get_snapshot()
+
+    # Active node selected → detail view
+    if controller.active_node_id and snapshot:
+        fig = _dispatch_plot(controller.active_node_id)
+        title = _get_node_title(controller.active_node_id)
+        desc = _get_node_description(controller.active_node_id)
+        return (svg, fig, f"### {title}", desc)
+
+    # No active node → overview
+    if snapshot:
+        fig = plot_layer_contributions(snapshot)
+        return (svg, fig, "### 🏗️ Qwen2.5-0.5B", "Click a component in the flowchart to inspect.")
+    else:
+        return (svg, _empty_fig("Press Generate to start."), "### 🏗️ Qwen2.5-0.5B", "Enter a prompt and click **Generate**.")
 
 
 def _empty_response() -> tuple:
@@ -229,27 +393,6 @@ def _error_response(msg: str) -> tuple:
     )
 
 
-def _build_response(token_idx: int = 0) -> tuple:
-    """Build the 4-part output tuple for the current UI state."""
-    svg = controller.current_svg
-    explorer = controller.explorer
-    snapshot = explorer.get_step(int(token_idx)) if explorer and explorer.num_steps() > 0 else None
-
-    # Active node selected → detail view
-    if controller.active_node_id and snapshot:
-        fig = _dispatch_plot(controller.active_node_id, snapshot)
-        title = _get_node_title(controller.active_node_id)
-        desc = _get_node_description(controller.active_node_id)
-        return (svg, fig, f"### {title}", desc)
-
-    # No active node → overview
-    if snapshot:
-        fig = plot_layer_contributions(snapshot)
-        return (svg, fig, "### 🏗️ Qwen2.5-0.5B", "Click a component in the flowchart to inspect.")
-    else:
-        return (svg, _empty_fig("Press Generate to start."), "### 🏗️ Qwen2.5-0.5B", "Enter a prompt and click **Generate**.")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Callbacks  (Task 3.6)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,7 +406,8 @@ def on_generate(prompt: str, max_new: int = 20, temperature: float = 0.8) -> tup
         explorer.generate_full(prompt, max_new_tokens=max_new, temperature=temperature)
     except Exception as e:
         return _error_response(str(e))
-    return _build_response(explorer.num_steps() - 1)
+    controller.active_node_id = None
+    return _build_response()
 
 
 def on_step(prompt: str, temperature: float = 0.8) -> tuple:
@@ -277,11 +421,13 @@ def on_step(prompt: str, temperature: float = 0.8) -> tuple:
             explorer.step_forward(temperature=temperature)
     except Exception as e:
         return _error_response(str(e))
-    return _build_response(explorer.num_steps() - 1)
+    return _build_response()
 
 
 def on_node_select(node_id: str) -> tuple:
     """Handle node selection from a flowchart click event."""
+    if not node_id:
+        return _build_response()
     _ensure_loaded()
     controller.active_node_id = node_id
     return _build_response()
@@ -289,6 +435,8 @@ def on_node_select(node_id: str) -> tuple:
 
 def on_collapse_toggle(node_id: str) -> str:
     """Toggle collapse state for a node group (called from JS bridge)."""
+    if not node_id:
+        return controller.current_svg
     if node_id in controller.collapsed:
         controller.collapsed.discard(node_id)
     else:
@@ -303,6 +451,7 @@ def on_reset() -> tuple:
     controller.node_tree = {}
     controller.active_node_id = None
     controller.collapsed = set()
+    controller.thumbnails = {}
     return _empty_response()
 
 
@@ -356,6 +505,37 @@ CUSTOM_CSS = """
 }
 """
 
+_JS_BRIDGE = """
+<script type="text/javascript">
+// Bridge between SVG flowchart CustomEvents and Gradio hidden textboxes
+(function() {
+    function setNativeValue(element, value) {
+        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype, 'value'
+        ).set;
+        nativeInputValueSetter.call(element, value);
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    document.addEventListener('flowchart-node-select', function(e) {
+        var nodeId = e.detail ? e.detail.nodeId : null;
+        if (nodeId) {
+            var input = document.getElementById('node-select-input');
+            if (input) setNativeValue(input, nodeId);
+        }
+    });
+
+    document.addEventListener('flowchart-collapse-toggle', function(e) {
+        var nodeId = e.detail ? e.detail.nodeId : null;
+        if (nodeId) {
+            var input = document.getElementById('collapse-toggle-input');
+            if (input) setNativeValue(input, nodeId);
+        }
+    });
+})();
+</script>
+"""
+
 
 def create_ui() -> gr.Blocks:
     """Build the Phase 3 two-panel Gradio interface.
@@ -384,7 +564,17 @@ def create_ui() -> gr.Blocks:
                     placeholder="Enter a prompt…",
                     elem_id="prompt-input",
                 )
-            with gr.Column(scale=1, min_width=120):
+            with gr.Column(scale=1, min_width=100):
+                temperature_input = gr.Slider(
+                    minimum=0.1, maximum=2.0, value=0.8, step=0.05,
+                    label="Temperature",
+                )
+            with gr.Column(scale=1, min_width=80):
+                max_new_input = gr.Slider(
+                    minimum=1, maximum=100, value=20, step=1,
+                    label="Max tokens",
+                )
+            with gr.Column(scale=1, min_width=100):
                 generate_btn = gr.Button(
                     "⚡ Generate",
                     variant="primary",
@@ -417,70 +607,37 @@ def create_ui() -> gr.Blocks:
                     )
 
         # Hidden textboxes for JS → Python communication
-        node_select_input = gr.Textbox(visible=False, value="", elem_id="node-select-input")
-        collapse_toggle_input = gr.Textbox(visible=False, value="", elem_id="collapse-toggle-input")
+        node_select_input = gr.Textbox(
+            visible=False, value="", elem_id="node-select-input"
+        )
+        collapse_toggle_input = gr.Textbox(
+            visible=False, value="", elem_id="collapse-toggle-input"
+        )
+
+        # JS bridge script (invisible HTML component at the bottom)
+        gr.HTML(value=_JS_BRIDGE, visible=False)
 
         # ── Wire up events ──
 
-        # Generate button
+        # Generate button → on_generate(prompt, max_new, temperature)
         generate_btn.click(
             fn=on_generate,
-            inputs=[prompt_input],
+            inputs=[prompt_input, max_new_input, temperature_input],
             outputs=[flowchart_html, detail_plot, detail_title, detail_description],
         )
 
-        # JS bridge: node selection
-        def _handle_node_select(node_id: str) -> tuple:
-            if not node_id:
-                return _build_response(0)
-            return on_node_select(node_id)
-
+        # Node selection from JS bridge
         node_select_input.change(
-            fn=_handle_node_select,
+            fn=on_node_select,
             inputs=[node_select_input],
             outputs=[flowchart_html, detail_plot, detail_title, detail_description],
         )
 
-        # JS bridge: collapse toggle
+        # Collapse toggle from JS bridge
         collapse_toggle_input.change(
             fn=on_collapse_toggle,
             inputs=[collapse_toggle_input],
             outputs=[flowchart_html],
-        )
-
-        # ── JavaScript injection ──
-        # Listen for CustomEvent('flowchart-node-select') dispatched by the
-        # SVG's selectNode() and toggleCollapse() JS functions, then forward
-        # the node ID into the hidden Gradio textboxes.
-        flowchart_html.change(
-            fn=None,
-            inputs=None,
-            outputs=None,
-            _js="""
-            () => {
-                const nodeInput = document.getElementById('node-select-input');
-                const collapseInput = document.getElementById('collapse-toggle-input');
-
-                function setNativeValue(element, value) {
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value'
-                    ).set;
-                    nativeInputValueSetter.call(element, value);
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-
-                document.addEventListener('flowchart-node-select', (e) => {
-                    const nodeId = e.detail ? e.detail.nodeId : null;
-                    if (nodeId && nodeInput) setNativeValue(nodeInput, nodeId);
-                });
-
-                document.addEventListener('flowchart-collapse-toggle', (e) => {
-                    const nodeId = e.detail ? e.detail.nodeId : null;
-                    if (nodeId && collapseInput) setNativeValue(collapseInput, nodeId);
-                });
-                return [];
-            }
-            """,
         )
 
     return demo

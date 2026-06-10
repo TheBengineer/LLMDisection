@@ -545,6 +545,9 @@ function toggleCollapse(nodeId) {
     if (window.__gradio_mode__ !== undefined) {
         window.dispatchEvent(new Event('resize'));
     }
+    // Sync collapse state back to server via Gradio bridge
+    var event = new CustomEvent('flowchart-collapse-toggle', { detail: { nodeId: nodeId } });
+    document.dispatchEvent(event);
 }
 function selectNode(nodeId) {
     // Remove highlight from all nodes
