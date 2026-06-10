@@ -48,28 +48,18 @@ All 18 plot functions exist in `plots.py` — verified against imports in `ui.py
 ---
 
 ### Bug #2 (minor): Unused imports
-**File:** `ui.py`, lines 31, 35  
-**Severity:** 🟢 Low
+**File:** `ui.py`  
+**Severity:** 🟢 Low → **✅ FIXED**
 
-`plot_logits_sampled` and `plot_residual_evolution` are imported but never called in `_dispatch_plot()`. Not harmful but dead code.
-
----
-
-## 🟡 Functional Gaps
-
-### Gap #1: No step-back navigation
-**Severity:** 🟡 Medium
-
-The UI has **Step** (advance one token) and **Generate** (generate all), but no way to browse previously generated tokens.  
-`UIController.get_snapshot(step_idx)` supports arbitrary step indices, and `explorer.num_steps()` is available — but there's no UI control (slider or dropdown) to select a step.
+`plot_logits_sampled` and `plot_residual_evolution` were imported but never called — removed.
 
 ---
 
-## 📋 Fix Roadmap
+## 📋 Fix Roadmap (All Complete)
 
-**Priority order:**
-
-1. **[P0] Fix Bug #1** — `_build_response()` calling `plot_layer_contributions(snapshot)` → **✅ DONE** (delegated to `_dispatch_plot("root")`)
-2. **[P1] Add step-back slider** — Token step slider to browse previous generation steps
-3. **[P2] Remove or wire unused imports** — `plot_logits_sampled` and `plot_residual_evolution` are imported but never called → remove dead imports
-4. **[P3] Richer node descriptions** — `_get_node_description()` falls back to generic text for many nodes; add tensor shapes
+| Priority | Description | Status |
+|---|---|---|
+| **[P0]** `_build_response()` calling `plot_layer_contributions(snapshot)` with wrong type | ✅ FIXED — delegated to `_dispatch_plot("root")` |
+| **[P1]** Step/Reset buttons unconnected | ✅ FIXED — wired `step_btn.click()` → `on_step()` and `reset_btn.click()` → `on_reset()` |
+| **[P2]** Dead imports (`plot_logits_sampled`, `plot_residual_evolution`) | ✅ FIXED — removed from import block |
+| **[P3]** Duplicate layer-index parser | ✅ FIXED — `_layer_index_from_node_id()` now delegates to `_parse_layer_idx()` |

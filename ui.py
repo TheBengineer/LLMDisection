@@ -28,11 +28,9 @@ from plots import (
     plot_embedding_slice,
     plot_histogram,
     plot_layer_contributions,
-    plot_logits_sampled,
     plot_mlp_activation,
     plot_qkv_vector,
     plot_residual_delta,
-    plot_residual_evolution,
     plot_rope_comparison,
     plot_rope_rotation,
     plot_rmsnorm_comparison,
@@ -227,13 +225,10 @@ def _tensor_shapes_for_node(node_id: str, node_type: str, snapshot: StepSnapshot
 
 
 def _layer_index_from_node_id(node_id: str) -> int | None:
-    """Parse layer index from a node ID like 'layer_5' or 'layer_5_attention'."""
-    if not node_id or not node_id.startswith("layer_"):
+    """Parse layer index from a node ID (delegates to _parse_layer_idx)."""
+    if not node_id:
         return None
-    try:
-        return int(node_id.split("_")[1])
-    except (IndexError, ValueError):
-        return None
+    return _parse_layer_idx(node_id)
 
 
 def _get_node_title(node_id: str) -> str:
@@ -758,6 +753,19 @@ def create_ui() -> gr.Blocks:
             fn=on_collapse_toggle,
             inputs=[collapse_toggle_input],
             outputs=[flowchart_html],
+        )
+
+        # Step button → on_step(prompt, temperature)
+        step_btn.click(
+            fn=on_step,
+            inputs=[prompt_input, temperature_input],
+            outputs=[flowchart_html, detail_plot, detail_title, detail_description],
+        )
+
+        # Reset button → on_reset()
+        reset_btn.click(
+            fn=on_reset,
+            outputs=[flowchart_html, detail_plot, detail_title, detail_description],
         )
 
     return demo
