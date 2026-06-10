@@ -715,6 +715,179 @@ def plot_rmsnorm_comparison(
 # ── Residual evolution (all layers at once) ──────────────────────────────────
 
 
+# ── Layer overview (multi-panel dashboard) ──────────────────────────────────
+
+
+def plot_layer_overview(lidx: int, layer) -> go.Figure:
+    """Multi-panel overview figure for a single transformer layer.
+
+    Shows a weight matrix gallery, activation magnitude bar chart (if
+    generation data exists), and the first available weight matrix as a
+    proper heatmap for detailed inspection.
+    """
+    # ── Collect available weights ──
+    WEIGHT_SPECS: list[tuple[str, str]] = [
+        ("Q", "q_weight"), ("K", "k_weight"), ("V", "v_weight"),
+        ("O", "o_weight"), ("Gate", "gate_weight"),
+        ("Up", "up_weight"), ("Down", "down_weight"),
+    ]
+    available: list[tuple[str, np.ndarray]] = []
+    for name, attr in WEIGHT_SPECS:
+        w = getattr(layer, attr, None)
+        if w is not None:
+            available.append((name, w))
+
+    if not available:
+        return _empty_fig(f"Layer {lidx} — no weight data")
+
+    # ── Build weight gallery: down-sample + pad + concatenate ──
+    THUMB = 24
+    GAP = 2
+    panels: list[np.ndarray] = []
+    labels: list[str] = []
+    for name, w in available:
+        step_r = max(1, w.shape[0] // THUMB)
+        step_c = max(1, w.shape[1] // THUMB)
+        panel = np.clip(w[::step_r, ::step_c], -3, 3)
+        panels.append(panel)
+        labels.append(name)
+
+    max_h = max(p.shape[0] for p in panels)
+    padded: list[np.ndarray] = []
+    for p in panels:
+        if p.shape[0] < max_h:
+            p = np.vstack([p, np.zeros((max_h - p.shape[0], p.shape[1]))])
+        padded.append(p)
+
+    gap_col = np.full((max_h, GAP), np.nan)
+    gallery = padded[0]
+    for p in padded[1:]:
+        gallery = np.hstack([gallery, gap_col, p])
+
+    # Compute x positions for label annotations under each panel
+    x_centers: list[float] = []
+    offset = panels[0].shape[1] / 2.0 - 0.5
+    x_centers.append(offset)
+    for i in range(1, len(panels)):
+        offset += GAP + panels[i - 1].shape[1] / 2.0 + panels[i].shape[1] / 2.0
+        x_centers.append(offset)
+
+    # ── Collect activation norms ──
+    ACT_SPECS: list[tuple[str, str]] = [
+        ("Pre-Attn\nResidual", "residual_pre_attn"),
+        ("Post-Attn\nResidual", "residual_post_attn"),
+        ("Post-MLP\nResidual", "residual_post_mlp"),
+        ("Attention\nOutput", "attn_output"),
+        ("MLP\nOutput", "mlp_output"),
+        ("Input LN\nOutput", "input_layernorm_output"),
+    ]
+    act_labels: list[str] = []
+    act_values: list[float] = []
+    for name, attr in ACT_SPECS:
+        v = getattr(layer, attr, None)
+        if v is not None:
+            act_labels.append(name)
+            act_values.append(float(np.linalg.norm(v)))
+    has_act = len(act_values) > 0
+
+    # ── Select child plot (first available weight matrix) ──
+    child_name, child_w = available[0]
+
+    # ── Build subplot figure ──
+    n_rows = 3 if has_act else 2
+    row_heights = [120, 200, 350] if has_act else [120, 350]
+    sub_titles = (
+        ["Weight Matrices", "Activation Magnitudes (L2 Norm)",
+         f"{child_name} Weight Matrix"]
+        if has_act
+        else ["Weight Matrices", f"{child_name} Weight Matrix"]
+    )
+
+    fig = make_subplots(
+        rows=n_rows, cols=1,
+        row_heights=row_heights,
+        vertical_spacing=0.1,
+        subplot_titles=sub_titles,
+    )
+
+    # ── Row 1: Weight gallery as heatmap ──
+    fig.add_trace(
+        go.Heatmap(
+            z=gallery,
+            colorscale="RdBu",
+            zmid=0,
+            showscale=False,
+            hovertemplate="Weight %{x:.0f}, %{y:.0f}<br>%{z:.3f}<extra></extra>",
+        ),
+        row=1, col=1,
+    )
+    # Label annotations
+    for label, cx in zip(labels, x_centers):
+        fig.add_annotation(
+            x=cx, y=max_h + 2,
+            text=f"<b>{label}</b>",
+            showarrow=False,
+            font=dict(size=10),
+            xref="x", yref="y",
+            row=1, col=1,
+        )
+    fig.update_xaxes(visible=False, row=1, col=1)
+    fig.update_yaxes(visible=False, autorange="reversed", row=1, col=1)
+    fig.update_layout(margin=dict(t=30, b=30))
+
+    # ── Row 2: Activation bar chart (if available) ──
+    if has_act:
+        row_idx = 2
+        fig.add_trace(
+            go.Bar(
+                x=act_labels,
+                y=act_values,
+                marker_color="mediumseagreen",
+                hovertemplate="%{x}<br>L2: %{y:.3f}<extra></extra>",
+            ),
+            row=row_idx, col=1,
+        )
+        fig.update_xaxes(title_text="Activation", row=row_idx, col=1)
+        fig.update_yaxes(title_text="L2 Norm", row=row_idx, col=1)
+        fig.update_layout(margin=dict(t=30, b=30))
+    else:
+        row_idx = 1  # no act row, child is row 2
+
+    # ── Last row: Child weight matrix ──
+    child_row = n_rows
+    # Down-sample for display
+    MAX_DIM = 512
+    r, c = child_w.shape
+    step_r = max(1, r // MAX_DIM) if r > MAX_DIM else 1
+    step_c = max(1, c // MAX_DIM) if c > MAX_DIM else 1
+    sub = child_w[::step_r, ::step_c]
+    fig.add_trace(
+        go.Heatmap(
+            z=sub,
+            colorscale="RdBu",
+            zmid=0,
+            hovertemplate="Row %{y}<br>Col %{x}<br>%{z:.4f}<extra></extra>",
+        ),
+        row=child_row, col=1,
+    )
+    fig.update_xaxes(
+        title_text=f"Input dim (sampled every {step_c})" if step_c > 1 else "Input dim",
+        row=child_row, col=1,
+    )
+    fig.update_yaxes(
+        title_text=f"Output dim (sampled every {step_r})" if step_r > 1 else "Output dim",
+        row=child_row, col=1,
+    )
+
+    fig.update_layout(
+        title=dict(text=f"Layer {lidx} Overview", x=0.5),
+        height=sum(row_heights) + 40 * n_rows,
+        margin=dict(l=50, r=20, t=40, b=40),
+        hovermode="closest",
+    )
+    return fig
+
+
 def plot_residual_evolution(
     layers: Dict[int, "LayerSnapshot"],  # noqa: F821 — forward ref acceptable
     max_dims: int = 100,

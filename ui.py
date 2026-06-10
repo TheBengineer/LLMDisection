@@ -36,6 +36,7 @@ from plots import (
     plot_rope_rotation,
     plot_rmsnorm_comparison,
     plot_silu_scatter,
+    plot_layer_overview,
     plot_top_logits,
     plot_topk,
     plot_vector_bar,
@@ -222,6 +223,31 @@ def _tensor_shapes_for_node(node_id: str, node_type: str, snapshot: StepSnapshot
             if arr is not None:
                 parts.append(f"{name} `{list(arr.shape)}`")
         return "• " + "  • ".join(parts) if parts else ""
+
+    if node_type == "layer_group":
+        # Show all weight matrices and activations for this layer
+        w_parts = []
+        for name, attr in [("Q","q_weight"), ("K","k_weight"), ("V","v_weight"),
+                           ("O","o_weight"), ("Gate","gate_weight"),
+                           ("Up","up_weight"), ("Down","down_weight")]:
+            w = getattr(layer, attr, None)
+            if w is not None:
+                w_parts.append(f"{name} `{list(w.shape)}`")
+        a_parts = []
+        for name, attr in [("Pre-Attn","residual_pre_attn"),
+                           ("Post-Attn","residual_post_attn"),
+                           ("Post-MLP","residual_post_mlp"),
+                           ("Attn Out","attn_output"),
+                           ("MLP Out","mlp_output")]:
+            v = getattr(layer, attr, None)
+            if v is not None:
+                a_parts.append(f"{name} `{list(v.shape)}`")
+        lines = []
+        if w_parts:
+            lines.append("• **Weights:** " + "  ".join(w_parts))
+        if a_parts:
+            lines.append("• **Activations:** " + "  ".join(a_parts))
+        return "\n".join(lines) if lines else ""
 
     return ""
 
@@ -427,6 +453,9 @@ def _dispatch_plot(node_id: str) -> go.Figure:
                 layer.residual_pre_attn, layer.residual_post_mlp,
                 title=node.label,
             )
+        # ── Layer group overview ──
+        if node.node_type == "layer_group" and lidx is not None:
+            return plot_layer_overview(lidx, layer)
 
     except Exception as e:
         return _empty_fig(f"Plot error: {e}")
