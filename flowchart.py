@@ -539,9 +539,12 @@ function toggleCollapse(nodeId) {
     arrow.innerHTML = isExpanded
         ? '<polygon points="' + (-4) + ',' + (-6) + ' ' + (-4) + ',' + (6) + ' ' + (6) + ',' + (0) + '" fill="#ccc" />'
         : '<polygon points="' + (-6) + ',' + (-4) + ' ' + (6) + ',' + (-4) + ' ' + (0) + ',' + (6) + '" fill="#ccc" />';
+    // Select the node (so the detail panel updates)
+    var selectEvent = new CustomEvent('flowchart-node-select', { detail: { nodeId: nodeId } });
+    document.dispatchEvent(selectEvent);
     // Sync collapse state back to server via Gradio bridge
-    var event = new CustomEvent('flowchart-collapse-toggle', { detail: { nodeId: nodeId } });
-    document.dispatchEvent(event);
+    var collapseEvent = new CustomEvent('flowchart-collapse-toggle', { detail: { nodeId: nodeId } });
+    document.dispatchEvent(collapseEvent);
 }
 function selectNode(nodeId) {
     // Remove highlight from all nodes
@@ -662,18 +665,19 @@ def render_flowchart_svg(
         stroke_w = 3 if is_active or is_highlighted else 1.5
         node_opacity = 0.3 if is_dimmed else 0.9
 
-        # Group for this node (clickable for selection)
+        # Group for this node (clickable)
         glow = ' filter="url(#glow)"' if is_active else ""
         dim = f' opacity="{node_opacity}"' if is_dimmed else ""
+        onclick = f"toggleCollapse('{nid}')" if has_children else f"selectNode('{nid}')"
         parts.append(
             f'<g class="flowchart-node-group" id="group-{nid}"'
-            f' cursor="pointer" onclick="selectNode(\'{nid}\')"{glow}{dim}>'
+            f' cursor="pointer" onclick="{onclick}"{glow}{dim}>'
         )
 
         # Tooltip
         if has_children:
             count = len(node.children)
-            parts.append(f'<title>Click to expand — contains {count} children</title>')
+            parts.append(f'<title>Click to expand/collapse — contains {count} children</title>')
         elif node.shape:
             parts.append(f'<title>{_escape_xml(node.label)} [{node.shape}]</title>')
         else:
