@@ -591,7 +591,7 @@ def render_flowchart_svg(
 
     # Compute layout starting from root
     layout, total_h = _compute_layout(nodes, "root", expanded_override)
-    canvas_h = max(total_h + 40, 600)
+    canvas_h = max(int(total_h * 1.2) + 40, 600)
     svg_w = CANVAS_MIN_W
 
     # Build a lookup from id -> layout entry
