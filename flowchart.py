@@ -422,7 +422,7 @@ THUMB_SIZE = 64
 def _compute_layout(
     nodes: dict[str, FlowchartNode],
     node_id: str,
-    collapsed_override: set[str] | None = None,
+    expanded_override: set[str] | None = None,
     x_offset: int = 0,
     y_offset: int = 0,
 ) -> tuple[list[dict], int]:
@@ -431,12 +431,12 @@ def _compute_layout(
     Returns (layout_list, total_height) where layout_list contains
     dicts with keys: id, x, y, w, h, has_thumb, visible.
     """
-    if collapsed_override is None:
-        collapsed_override = set()
+    if expanded_override is None:
+        expanded_override = set()
 
     layout: list[dict] = []
     node = nodes[node_id]
-    is_collapsed = node.collapsed or (node_id in collapsed_override)
+    is_collapsed = node.collapsed and node_id not in expanded_override
     has_children = bool(node.children)
 
     # Determine this node's dimensions
@@ -464,7 +464,7 @@ def _compute_layout(
             if child_id not in nodes:
                 continue
             child_layout, child_h = _compute_layout(
-                nodes, child_id, collapsed_override, child_x, y_ptr
+                nodes, child_id, expanded_override, child_x, y_ptr
             )
             layout.extend(child_layout)
             y_ptr += child_h + V_GAP_SIBLING
@@ -531,20 +531,14 @@ def _build_js() -> str:
     """Embedded JavaScript for interactivity."""
     return """<script type="text/javascript">
 function toggleCollapse(nodeId) {
-    var container = document.getElementById('children-' + nodeId);
     var arrow = document.getElementById('arrow-' + nodeId);
-    if (!container) return;
-    var isCollapsed = container.style.display === 'none';
-    container.style.display = isCollapsed ? '' : 'none';
-    if (arrow) {
-        arrow.innerHTML = isCollapsed
-            ? '<polygon points="' + (-6) + ',' + (-4) + ' ' + (6) + ',' + (-4) + ' ' + (0) + ',' + (6) + '" fill="#ccc" />'
-            : '<polygon points="' + (-4) + ',' + (-6) + ' ' + (-4) + ',' + (6) + ' ' + (6) + ',' + (0) + '" fill="#ccc" />';
-    }
-    // Dispatch resize event for Gradio iframe
-    if (window.__gradio_mode__ !== undefined) {
-        window.dispatchEvent(new Event('resize'));
-    }
+    if (!arrow) return;
+    // Toggle arrow direction for instant visual feedback
+    var isExpanded = arrow.getAttribute('data-state') === 'expanded';
+    arrow.setAttribute('data-state', isExpanded ? 'collapsed' : 'expanded');
+    arrow.innerHTML = isExpanded
+        ? '<polygon points="' + (-4) + ',' + (-6) + ' ' + (-4) + ',' + (6) + ' ' + (6) + ',' + (0) + '" fill="#ccc" />'
+        : '<polygon points="' + (-6) + ',' + (-4) + ' ' + (6) + ',' + (-4) + ' ' + (0) + ',' + (6) + '" fill="#ccc" />';
     // Sync collapse state back to server via Gradio bridge
     var event = new CustomEvent('flowchart-collapse-toggle', { detail: { nodeId: nodeId } });
     document.dispatchEvent(event);
@@ -572,7 +566,7 @@ def render_flowchart_svg(
     nodes: dict[str, FlowchartNode],
     active_node_id: str | None = None,
     thumbnails: dict[str, str] | None = None,
-    collapsed_override: set[str] | None = None,
+    expanded_override: set[str] | None = None,
 ) -> str:
     """Render the full SVG flowchart.
 
@@ -580,18 +574,18 @@ def render_flowchart_svg(
         nodes: Node tree (from build_qwen_node_tree).
         active_node_id: Currently selected node id (highlighted).
         thumbnails: Dict mapping node_id -> "data:image/png;base64,..." data URIs.
-        collapsed_override: Set of node ids forced collapsed (client-side toggle state).
+        expanded_override: Set of node ids to expand even if default is collapsed.
 
     Returns:
         SVG string.
     """
     if thumbnails is None:
         thumbnails = {}
-    if collapsed_override is None:
-        collapsed_override = set()
+    if expanded_override is None:
+        expanded_override = set()
 
     # Compute layout starting from root
-    layout, total_h = _compute_layout(nodes, "root", collapsed_override)
+    layout, total_h = _compute_layout(nodes, "root", expanded_override)
     canvas_h = max(total_h + 40, 600)
     svg_w = CANVAS_MIN_W
 
@@ -656,32 +650,39 @@ def render_flowchart_svg(
         border_color = "#F1C40F" if is_active else "#555"
         stroke_w = 3 if is_active else 1.5
 
-        # Group for this node
-        parts.append(f'<g class="flowchart-node-group" id="group-{nid}">')
-
-        # Main rect (clickable for selection)
+        # Group for this node (clickable for selection)
+        glow = ' filter="url(#glow)"' if is_active else ""
         parts.append(
-            f'<rect id="rect-{nid}" class="flowchart-node" x="{x}" y="{y}"'
-            f' width="{w}" height="{h}" rx="6" fill="{color}"'
-            f' stroke="{border_color}" stroke-width="{stroke_w}" opacity="0.9"'
-            f' cursor="pointer"'
-            f' onclick="selectNode(\'{nid}\')" />'
+            f'<g class="flowchart-node-group" id="group-{nid}"'
+            f' cursor="pointer" onclick="selectNode(\'{nid}\')"{glow}>'
         )
 
         # Tooltip
-        if node.shape:
+        if has_children:
+            count = len(node.children)
+            parts.append(f'<title>Click to expand — contains {count} children</title>')
+        elif node.shape:
             parts.append(f'<title>{_escape_xml(node.label)} [{node.shape}]</title>')
+        else:
+            parts.append(f'<title>{_escape_xml(node.label)}</title>')
+
+        # Main rect
+        parts.append(
+            f'<rect id="rect-{nid}" class="flowchart-node" x="{x}" y="{y}"'
+            f' width="{w}" height="{h}" rx="6" fill="{color}"'
+            f' stroke="{border_color}" stroke-width="{stroke_w}" opacity="0.9" />'
+        )
 
         # Expand/collapse arrow (for nodes with children)
         if has_children:
             arrow_x = x + 14
             arrow_y = y + h // 2
-            arrow_type = "expanded" if not is_collapsed else "collapsed"
+            arrow_state = "expanded" if not is_collapsed else "collapsed"
             parts.append(
-                f'<g id="arrow-{nid}" cursor="pointer"'
+                f'<g id="arrow-{nid}" data-state="{arrow_state}" cursor="pointer"'
                 f' onclick="event.stopPropagation(); toggleCollapse(\'{nid}\')">'
             )
-            parts.append(_svg_arrow(arrow_type, arrow_x, arrow_y))
+            parts.append(_svg_arrow(arrow_state, arrow_x, arrow_y))
             parts.append("</g>")
 
         # Icon
@@ -707,14 +708,6 @@ def render_flowchart_svg(
             parts.append(_svg_thumbnail(thumb_x, thumb_y, thumbnails[nid]))
 
         parts.append("</g>")
-
-        # Children container (for collapse/expand)
-        if has_children:
-            style = "display:none;" if is_collapsed else ""
-            parts.append(f'<g id="children-{nid}" style="{style}">')
-            # Children rendered inline above, but we wrap them conceptually
-            # Actually we just use this as a JS target
-            parts.append(f'</g>')
 
     parts.append(_build_js())
     parts.append("</svg>")

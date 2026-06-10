@@ -54,7 +54,7 @@ class UIController:
         self.ready = False
         self.node_tree: dict[str, FlowchartNode] = {}
         self.active_node_id: Optional[str] = None
-        self.collapsed: set[str] = set()
+        self.expanded_override: set[str] = set()
         self.thumbnails: dict[str, str] = {}
 
     @property
@@ -64,7 +64,7 @@ class UIController:
             nodes=self.node_tree,
             active_node_id=self.active_node_id,
             thumbnails=self.thumbnails,
-            collapsed_override=self.collapsed,
+            expanded_override=self.expanded_override,
         )
 
     @property
@@ -535,6 +535,15 @@ def on_node_select(node_id: str) -> tuple:
         return _build_response()
     _ensure_loaded()
     controller.active_node_id = node_id
+
+    # Auto-expand ancestors so the selected node is visible
+    node_node = controller.node_tree.get(node_id)
+    while node_node and node_node.parent_id:
+        parent = controller.node_tree.get(node_node.parent_id)
+        if parent and parent.collapsed:
+            controller.expanded_override.add(node_node.parent_id)
+        node_node = parent
+
     return _build_response()
 
 
@@ -542,10 +551,10 @@ def on_collapse_toggle(node_id: str) -> str:
     """Toggle collapse state for a node group (called from JS bridge)."""
     if not node_id:
         return controller.current_svg
-    if node_id in controller.collapsed:
-        controller.collapsed.discard(node_id)
+    if node_id in controller.expanded_override:
+        controller.expanded_override.discard(node_id)
     else:
-        controller.collapsed.add(node_id)
+        controller.expanded_override.add(node_id)
     return controller.current_svg
 
 
@@ -555,7 +564,7 @@ def on_reset() -> tuple:
     controller.ready = False
     controller.node_tree = {}
     controller.active_node_id = None
-    controller.collapsed = set()
+    controller.expanded_override = set()
     controller.thumbnails = {}
     return _empty_response()
 
