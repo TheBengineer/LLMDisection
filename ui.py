@@ -8,8 +8,9 @@ detail panel (right) replaces the old tabbed layout.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Dict, List, Optional
 
+import numpy as np
 import gradio as gr
 import plotly.graph_objects as go
 
@@ -127,13 +128,112 @@ NODE_DESCRIPTIONS: dict[str, str] = {
 
 
 def _get_node_description(node_id: str) -> str:
-    """Return a human-readable description for the given node."""
+    """Return a human-readable description for the given node.
+
+    When a generation snapshot is available, enriches descriptions with
+    actual tensor shapes relevant to the node type.
+    """
     if not controller.node_tree:
         return "Loading model…"
     node = controller.node_tree.get(node_id)
     if node is None:
         return ""
-    return NODE_DESCRIPTIONS.get(node.node_type, f"{node.label} — explore internals.")
+    base = NODE_DESCRIPTIONS.get(node.node_type, f"{node.label} — explore internals.")
+
+    # Attach tensor shapes from the current snapshot (if any)
+    snapshot = controller.get_snapshot()
+    if snapshot is None:
+        return base
+
+    shape_info = _tensor_shapes_for_node(node_id, node.node_type, snapshot)
+    if shape_info:
+        return base + "\n\n" + shape_info
+    return base
+
+
+def _tensor_shapes_for_node(node_id: str, node_type: str, snapshot: StepSnapshot) -> str:
+    """Return a formatted string of relevant tensor shapes for *node_type*."""
+    # If a specific layer is targeted, extract its snapshot
+    layer_idx = _layer_index_from_node_id(node_id)
+    layer = snapshot.layers.get(layer_idx) if layer_idx is not None else None
+
+    if node_type == "root":
+        n = len(snapshot.layers)
+        h = snapshot.input_embeds.shape[-1] if snapshot.input_embeds is not None else "?"
+        return f"• **Layers:** {n}  • **Hidden dim:** {h}"
+
+    if node_type == "embedding" and snapshot.input_embeds is not None:
+        return f"• **Shape:** `{list(snapshot.input_embeds.shape)}`  (seq_len × hidden_dim)"
+
+    if node_type == "output" and snapshot.logits is not None:
+        return f"• **Logits shape:** `{list(snapshot.logits.shape)}`  (vocab_size,)"
+
+    if layer is None:
+        return ""
+
+    if node_type == "rmsnorm" and layer.input_layernorm_output is not None:
+        return f"• **Shape:** `{list(layer.input_layernorm_output.shape)}`"
+
+    if node_type == "attention":
+        parts = []
+        if layer.q is not None:
+            parts.append(f"Q `{list(layer.q.shape)}`")
+        if layer.k is not None:
+            parts.append(f"K `{list(layer.k.shape)}`")
+        if layer.v is not None:
+            parts.append(f"V `{list(layer.v.shape)}`")
+        if layer.attn_output is not None:
+            parts.append(f"out `{list(layer.attn_output.shape)}`")
+        return "• " + "  • ".join(parts) if parts else ""
+
+    if node_type == "mlp":
+        parts = []
+        if layer.mlp_gate_raw is not None:
+            parts.append(f"gate `{list(layer.mlp_gate_raw.shape)}`")
+        if layer.mlp_up is not None:
+            parts.append(f"up `{list(layer.mlp_up.shape)}`")
+        if layer.mlp_output is not None:
+            parts.append(f"out `{list(layer.mlp_output.shape)}`")
+        return "• " + "  • ".join(parts) if parts else ""
+
+    if node_type == "residual":
+        parts = []
+        if layer.residual_pre_attn is not None:
+            parts.append(f"pre-attn `{list(layer.residual_pre_attn.shape)}`")
+        if layer.residual_post_attn is not None:
+            parts.append(f"post-attn `{list(layer.residual_post_attn.shape)}`")
+        if layer.residual_post_mlp is not None:
+            parts.append(f"post-mlp `{list(layer.residual_post_mlp.shape)}`")
+        return "• " + "  • ".join(parts) if parts else ""
+
+    if node_type == "activation" and layer.mlp_gate_silu is not None:
+        return f"• **Shape:** `{list(layer.mlp_gate_silu.shape)}`"
+
+    if node_type == "softmax" and layer.attn_probs is not None:
+        return f"• **Shape:** `{list(layer.attn_probs.shape)}`  (num_heads × seq_len)"
+
+    if node_type == "linear":
+        # Show weight matrix shape for the relevant linear layer
+        parts = []
+        for name, arr in [("Q", layer.q_weight), ("K", layer.k_weight),
+                           ("V", layer.v_weight), ("O", layer.o_weight),
+                           ("gate", layer.gate_weight), ("up", layer.up_weight),
+                           ("down", layer.down_weight)]:
+            if arr is not None:
+                parts.append(f"{name} `{list(arr.shape)}`")
+        return "• " + "  • ".join(parts) if parts else ""
+
+    return ""
+
+
+def _layer_index_from_node_id(node_id: str) -> int | None:
+    """Parse layer index from a node ID like 'layer_5' or 'layer_5_attention'."""
+    if not node_id or not node_id.startswith("layer_"):
+        return None
+    try:
+        return int(node_id.split("_")[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def _get_node_title(node_id: str) -> str:
@@ -176,8 +276,18 @@ def _dispatch_plot(node_id: str) -> go.Figure:
     try:
         # ── Root → layer contributions overview ──
         if node_id == "root":
-            if snapshot is not None:
-                return plot_layer_contributions(snapshot)
+            if snapshot is not None and snapshot.layers:
+                contribs: List[float] = []
+                for lidx in sorted(snapshot.layers.keys()):
+                    layer = snapshot.layers[lidx]
+                    if layer.residual_pre_attn is not None and layer.residual_post_mlp is not None:
+                        delta = float(np.linalg.norm(
+                            layer.residual_post_mlp - layer.residual_pre_attn
+                        ))
+                        contribs.append(delta)
+                    else:
+                        contribs.append(0.0)
+                return plot_layer_contributions(contribs)
             return _empty_fig("Press Generate to start.")
 
         # ── Token Embedding ──
@@ -365,9 +475,9 @@ def _build_response() -> tuple:
         desc = _get_node_description(controller.active_node_id)
         return (svg, fig, f"### {title}", desc)
 
-    # No active node → overview
+    # No active node → overview (delegate to dispatch which has correct extraction)
     if snapshot:
-        fig = plot_layer_contributions(snapshot)
+        fig = _dispatch_plot("root")
         return (svg, fig, "### 🏗️ Qwen2.5-0.5B", "Click a component in the flowchart to inspect.")
     else:
         return (svg, _empty_fig("Press Generate to start."), "### 🏗️ Qwen2.5-0.5B", "Enter a prompt and click **Generate**.")
@@ -574,11 +684,21 @@ def create_ui() -> gr.Blocks:
                     minimum=1, maximum=100, value=20, step=1,
                     label="Max tokens",
                 )
+            with gr.Column(scale=1, min_width=80):
+                step_btn = gr.Button(
+                    "▶ Step",
+                    elem_id="step-btn",
+                )
             with gr.Column(scale=1, min_width=100):
                 generate_btn = gr.Button(
                     "⚡ Generate",
                     variant="primary",
                     elem_id="generate-btn",
+                )
+            with gr.Column(scale=1, min_width=80):
+                reset_btn = gr.Button(
+                    "⟲ Reset",
+                    elem_id="reset-btn",
                 )
 
         with gr.Row(equal_height=False):
