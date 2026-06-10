@@ -539,12 +539,9 @@ function toggleCollapse(nodeId) {
     arrow.innerHTML = isExpanded
         ? '<polygon points="' + (-4) + ',' + (-6) + ' ' + (-4) + ',' + (6) + ' ' + (6) + ',' + (0) + '" fill="#ccc" />'
         : '<polygon points="' + (-6) + ',' + (-4) + ' ' + (6) + ',' + (-4) + ' ' + (0) + ',' + (6) + '" fill="#ccc" />';
-    // Select the node (so the detail panel updates)
-    var selectEvent = new CustomEvent('flowchart-node-select', { detail: { nodeId: nodeId } });
-    document.dispatchEvent(selectEvent);
-    // Sync collapse state back to server via Gradio bridge
-    var collapseEvent = new CustomEvent('flowchart-collapse-toggle', { detail: { nodeId: nodeId } });
-    document.dispatchEvent(collapseEvent);
+    // Sync collapse state (and update selection) via Gradio bridge
+    var event = new CustomEvent('flowchart-collapse-toggle', { detail: { nodeId: nodeId } });
+    document.dispatchEvent(event);
 }
 function selectNode(nodeId) {
     // Remove highlight from all nodes

@@ -588,15 +588,26 @@ def on_node_select(node_id: str) -> tuple:
     return _build_response()
 
 
-def on_collapse_toggle(node_id: str) -> str:
-    """Toggle collapse state for a node group (called from JS bridge)."""
+def on_collapse_toggle(node_id: str) -> tuple:
+    """Toggle collapse state and select the node."""
     if not node_id or controller.generating:
-        return controller.current_svg
+        return _build_response()
+    _ensure_loaded()
+    # Toggle collapse
     if node_id in controller.expanded_override:
         controller.expanded_override.discard(node_id)
     else:
         controller.expanded_override.add(node_id)
-    return controller.current_svg
+    # Select the node
+    controller.active_node_id = node_id
+    # Auto-expand ancestors so the node stays visible
+    node_node = controller.node_tree.get(node_id)
+    while node_node and node_node.parent_id:
+        parent = controller.node_tree.get(node_node.parent_id)
+        if parent and parent.collapsed:
+            controller.expanded_override.add(node_node.parent_id)
+        node_node = parent
+    return _build_response()
 
 
 def on_expand_all() -> str:
@@ -1010,7 +1021,7 @@ def create_ui() -> gr.Blocks:
         collapse_toggle_input.change(
             fn=on_collapse_toggle,
             inputs=[collapse_toggle_input],
-            outputs=[flowchart_html],
+            outputs=[flowchart_html, detail_plot, detail_title, detail_description],
         )
 
         # Step button → on_step(prompt, temperature)
