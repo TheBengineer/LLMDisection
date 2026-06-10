@@ -9,12 +9,17 @@ Phase 1: image/plot generators for every component.
 
 from __future__ import annotations
 
+import base64
+import io
 from typing import Dict, List, Optional
 
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# Thumbnail size constant (matches flowchart.py)
+THUMB_SIZE: int = 80
 
 
 def _empty_fig(msg: str = "No data") -> go.Figure:
@@ -25,6 +30,40 @@ def _empty_fig(msg: str = "No data") -> go.Figure:
     )
     fig.update_layout(height=150, margin=dict(l=10, r=10, t=10, b=10))
     return fig
+
+
+def plot_to_thumbnail(
+    fig: go.Figure,
+    width: int = THUMB_SIZE,
+    height: int = THUMB_SIZE,
+) -> str:
+    """Convert a Plotly figure to a base64-encoded PNG data URI for SVG embedding.
+
+    Args:
+        fig: A Plotly Figure.
+        width: Image width in pixels (default 80).
+        height: Image height in pixels (default 80).
+
+    Returns:
+        A data URI string like ``data:image/png;base64,...`` suitable for
+        use in an SVG ``<image>`` element's ``href`` attribute.
+
+    If conversion fails (e.g. no Kaleido/orca available), returns an empty
+    transparent placeholder data URI so the layout doesn't break.
+    """
+    try:
+        from plotly.io import to_image
+
+        img_bytes = to_image(fig, format="png", width=width, height=height, scale=1.0)
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        # Transparent 1x1 PNG as fallback
+        return (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+            "DUlEQVQIHWNgYGD4DwABBAEAwS0XrQAAAABJRU5ErkJggg=="
+        )
 
 
 # ── Attention ────────────────────────────────────────────────────────────────
