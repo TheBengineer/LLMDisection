@@ -671,7 +671,7 @@ CUSTOM_CSS = """
 }
 #flowchart-container svg {
     width: 100%;
-    height: auto;
+    display: block;
     animation: svg-fade-in 0.15s ease-in;
 }
 @keyframes svg-fade-in {
