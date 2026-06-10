@@ -567,6 +567,7 @@ def render_flowchart_svg(
     active_node_id: str | None = None,
     thumbnails: dict[str, str] | None = None,
     expanded_override: set[str] | None = None,
+    highlight_ids: set[str] | None = None,
 ) -> str:
     """Render the full SVG flowchart.
 
@@ -575,6 +576,8 @@ def render_flowchart_svg(
         active_node_id: Currently selected node id (highlighted).
         thumbnails: Dict mapping node_id -> "data:image/png;base64,..." data URIs.
         expanded_override: Set of node ids to expand even if default is collapsed.
+        highlight_ids: Set of node ids to highlight (cyan). When non-empty,
+            nodes not in this set are dimmed to opacity 0.3.
 
     Returns:
         SVG string.
@@ -583,6 +586,8 @@ def render_flowchart_svg(
         thumbnails = {}
     if expanded_override is None:
         expanded_override = set()
+    if highlight_ids is None:
+        highlight_ids = set()
 
     # Compute layout starting from root
     layout, total_h = _compute_layout(nodes, "root", expanded_override)
@@ -592,15 +597,18 @@ def render_flowchart_svg(
     # Build a lookup from id -> layout entry
     layout_map = {e["id"]: e for e in layout}
 
-    # Identify visible node ids for connector rendering
+    # Identify visible node ids for connector rendering and keyboard nav
     visible_ids = {e["id"] for e in layout if e["visible"]}
+    visible_ordered = [e["id"] for e in layout if e["visible"]]
 
     parts: list[str] = []
 
     # SVG header + embedded JS
+    visible_nodes_attr = ",".join(visible_ordered)
     parts.append(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_w}" height="{canvas_h}"'
-        f' style="background:#1e1e1e; font-family:monospace;">'
+        f' style="background:#1e1e1e; font-family:monospace;"'
+        f' data-visible-nodes="{visible_nodes_attr}">'
     )
     parts.append("<defs>")
     parts.append(
@@ -645,16 +653,21 @@ def render_flowchart_svg(
         is_collapsed = entry["is_collapsed"]
         has_thumb = entry["has_thumb"]
 
-        # Determine border
+        # Determine border and dimming
         is_active = (nid == active_node_id)
-        border_color = "#F1C40F" if is_active else "#555"
-        stroke_w = 3 if is_active else 1.5
+        is_highlighted = bool(highlight_ids) and nid in highlight_ids and not is_active
+        is_dimmed = bool(highlight_ids) and nid not in highlight_ids
+
+        border_color = "#F1C40F" if is_active else ("#00BCD4" if is_highlighted else "#555")
+        stroke_w = 3 if is_active or is_highlighted else 1.5
+        node_opacity = 0.3 if is_dimmed else 0.9
 
         # Group for this node (clickable for selection)
         glow = ' filter="url(#glow)"' if is_active else ""
+        dim = f' opacity="{node_opacity}"' if is_dimmed else ""
         parts.append(
             f'<g class="flowchart-node-group" id="group-{nid}"'
-            f' cursor="pointer" onclick="selectNode(\'{nid}\')"{glow}>'
+            f' cursor="pointer" onclick="selectNode(\'{nid}\')"{glow}{dim}>'
         )
 
         # Tooltip
@@ -670,7 +683,7 @@ def render_flowchart_svg(
         parts.append(
             f'<rect id="rect-{nid}" class="flowchart-node" x="{x}" y="{y}"'
             f' width="{w}" height="{h}" rx="6" fill="{color}"'
-            f' stroke="{border_color}" stroke-width="{stroke_w}" opacity="0.9" />'
+            f' stroke="{border_color}" stroke-width="{stroke_w}" opacity="{node_opacity}" />'
         )
 
         # Expand/collapse arrow (for nodes with children)

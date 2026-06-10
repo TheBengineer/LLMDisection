@@ -18,6 +18,7 @@ from data_structures import StepSnapshot
 from engine import QwenExplorer
 from flowchart import (
     FlowchartNode,
+    _escape_xml,
     build_qwen_node_tree,
     render_flowchart_svg,
 )
@@ -52,6 +53,7 @@ class UIController:
     def __init__(self):
         self.explorer: Optional[QwenExplorer] = None
         self.ready = False
+        self.generating = False
         self.node_tree: dict[str, FlowchartNode] = {}
         self.active_node_id: Optional[str] = None
         self.expanded_override: set[str] = set()
@@ -451,17 +453,19 @@ def _ensure_loaded():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NUM_OUTPUTS = 4  # flowchart_html, detail_plot, detail_title, detail_description
+_NUM_OUTPUTS_FULL = 5  # with token_step_slider
 
 _O_SVG = 0
 _O_PLOT = 1
 _O_TITLE = 2
 _O_DESC = 3
+_O_SLIDER = 4
 
 
-def _build_response() -> tuple:
+def _build_response(token_idx: int | None = None) -> tuple:
     """Build the 4-part output tuple for the current UI state."""
     svg = controller.current_svg
-    snapshot = controller.get_snapshot()
+    snapshot = controller.get_snapshot(token_idx)
 
     # Active node selected → detail view
     if controller.active_node_id and snapshot:
@@ -478,6 +482,21 @@ def _build_response() -> tuple:
         return (svg, _empty_fig("Press Generate to start."), "### 🏗️ Qwen2.5-0.5B", "Enter a prompt and click **Generate**.")
 
 
+def _build_slider_update() -> dict:
+    """Return a gr.update for the token step slider."""
+    if controller.explorer is not None and controller.explorer.num_steps() > 0:
+        max_val = controller.explorer.num_steps() - 1
+        val = controller.latest_step_idx
+        return gr.update(maximum=max_val, value=val, interactive=True)
+    return gr.update(maximum=0, value=0, interactive=False)
+
+
+def _build_full_response(token_idx: int | None = None) -> tuple:
+    """Like _build_response but also returns slider update."""
+    svg, fig, title, desc = _build_response(token_idx)
+    return (svg, fig, title, desc, _build_slider_update())
+
+
 def _empty_response() -> tuple:
     """Return outputs for the empty / no-data state."""
     return (
@@ -488,14 +507,17 @@ def _empty_response() -> tuple:
     )
 
 
-def _error_response(msg: str) -> tuple:
+def _error_response(msg: str, include_slider: bool = False) -> tuple:
     """Return error-state outputs."""
-    return (
+    result = (
         controller.current_svg,
         _empty_fig(f"⚠️ {msg}"),
         "### ⚠️ Error",
         msg,
     )
+    if include_slider:
+        return result + (_build_slider_update(),)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -506,18 +528,26 @@ def _error_response(msg: str) -> tuple:
 def on_generate(prompt: str, max_new: int = 20, temperature: float = 0.8) -> tuple:
     """Full auto-generation."""
     _ensure_loaded()
+    if controller.generating:
+        return _build_full_response()
+    controller.generating = True
     explorer = controller.explorer
     try:
         explorer.generate_full(prompt, max_new_tokens=max_new, temperature=temperature)
     except Exception as e:
-        return _error_response(str(e))
+        controller.generating = False
+        return _error_response(str(e), include_slider=True)
     controller.active_node_id = None
-    return _build_response()
+    controller.generating = False
+    return _build_full_response()
 
 
 def on_step(prompt: str, temperature: float = 0.8) -> tuple:
     """Generate one more token."""
     _ensure_loaded()
+    if controller.generating:
+        return _build_full_response()
+    controller.generating = True
     explorer = controller.explorer
     try:
         if explorer.num_steps() == 0:
@@ -525,13 +555,22 @@ def on_step(prompt: str, temperature: float = 0.8) -> tuple:
         else:
             explorer.step_forward(temperature=temperature)
     except Exception as e:
-        return _error_response(str(e))
-    return _build_response()
+        controller.generating = False
+        return _error_response(str(e), include_slider=True)
+    controller.generating = False
+    return _build_full_response()
+
+
+def on_step_select(token_idx: int) -> tuple:
+    """Update the detail view to show a specific token step."""
+    if controller.explorer is None or controller.explorer.num_steps() == 0:
+        return _empty_response()
+    return _build_response(token_idx=token_idx)
 
 
 def on_node_select(node_id: str) -> tuple:
     """Handle node selection from a flowchart click event."""
-    if not node_id:
+    if not node_id or controller.generating:
         return _build_response()
     _ensure_loaded()
     controller.active_node_id = node_id
@@ -549,7 +588,7 @@ def on_node_select(node_id: str) -> tuple:
 
 def on_collapse_toggle(node_id: str) -> str:
     """Toggle collapse state for a node group (called from JS bridge)."""
-    if not node_id:
+    if not node_id or controller.generating:
         return controller.current_svg
     if node_id in controller.expanded_override:
         controller.expanded_override.discard(node_id)
@@ -558,15 +597,59 @@ def on_collapse_toggle(node_id: str) -> str:
     return controller.current_svg
 
 
+def on_expand_all() -> str:
+    """Expand all 24 layers."""
+    for i in range(24):
+        controller.expanded_override.add(f"layer_{i}")
+    return controller.current_svg
+
+
+def on_collapse_all() -> str:
+    """Collapse all 24 layers."""
+    for i in range(24):
+        controller.expanded_override.discard(f"layer_{i}")
+    return controller.current_svg
+
+
+def on_node_search(query: str) -> str:
+    """Filter and highlight nodes matching the query."""
+    if not query or not query.strip():
+        return controller.current_svg
+    q = query.strip().lower()
+    matched: set[str] = set()
+    for nid, node in controller.node_tree.items():
+        if q in node.label.lower() or q in node.node_type.lower():
+            matched.add(nid)
+    if not matched:
+        # Show overlay on existing SVG saying no matches found
+        svg = controller.current_svg
+        overlay = (
+            '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);'
+            'color:#888;font-size:14px;text-align:center;'
+            'background:#1e1e1e;padding:16px 24px;border-radius:8px;border:1px solid #444;">'
+            f'No nodes matching "<b>{_escape_xml(query)}</b>"</div>'
+        )
+        return f'<div style="position:relative;">{svg}{overlay}</div>'
+    return render_flowchart_svg(
+        nodes=controller.node_tree,
+        active_node_id=controller.active_node_id,
+        thumbnails=controller.thumbnails,
+        expanded_override=controller.expanded_override,
+        highlight_ids=matched,
+    )
+
+
 def on_reset() -> tuple:
     """Reset the entire explorer state."""
     controller.explorer = None
     controller.ready = False
+    controller.generating = False
     controller.node_tree = {}
     controller.active_node_id = None
     controller.expanded_override = set()
     controller.thumbnails = {}
-    return _empty_response()
+    svg, fig, title, desc = _empty_response()
+    return (svg, fig, title, desc, _build_slider_update())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -587,6 +670,11 @@ CUSTOM_CSS = """
 #flowchart-container svg {
     width: 100%;
     height: auto;
+    animation: svg-fade-in 0.15s ease-in;
+}
+@keyframes svg-fade-in {
+    from { opacity: 0.6; }
+    to { opacity: 1; }
 }
 #detail-panel {
     height: calc(100vh - 180px) !important;
@@ -617,12 +705,22 @@ CUSTOM_CSS = """
 #prompt-input textarea {
     font-size: 14px;
 }
+#node-search-input textarea {
+    font-size: 13px;
+}
+#expand-all-btn, #collapse-all-btn {
+    font-size: 12px;
+    padding: 4px 8px;
+    min-height: 30px;
+}
 """
 
 _JS_BRIDGE = """
 <script type="text/javascript">
-// Bridge between SVG flowchart CustomEvents and Gradio hidden textboxes
 (function() {
+    'use strict';
+
+    // ── Helper: write into hidden Gradio textbox ──
     function setNativeValue(element, value) {
         var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
             window.HTMLTextAreaElement.prototype, 'value'
@@ -631,11 +729,18 @@ _JS_BRIDGE = """
         element.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
+    // ── SVG → Gradio event bridge ──
     document.addEventListener('flowchart-node-select', function(e) {
         var nodeId = e.detail ? e.detail.nodeId : null;
         if (nodeId) {
             var input = document.getElementById('node-select-input');
             if (input) setNativeValue(input, nodeId);
+            // Persist selected node in URL hash
+            try {
+                var hash = new URLSearchParams(window.location.hash.slice(1));
+                hash.set('node', nodeId);
+                history.replaceState(null, '', '#' + hash.toString());
+            } catch(_) {}
         }
     });
 
@@ -646,6 +751,126 @@ _JS_BRIDGE = """
             if (input) setNativeValue(input, nodeId);
         }
     });
+
+    // ── Keyboard Navigation ──
+    function getVisibleNodes() {
+        var svg = document.querySelector('#flowchart-container svg');
+        if (!svg) return [];
+        var raw = svg.getAttribute('data-visible-nodes');
+        if (!raw) return [];
+        return raw.split(',');
+    }
+
+    function findNodeIndex(nodeId, nodes) {
+        for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i] === nodeId) return i;
+        }
+        return -1;
+    }
+
+    function selectNodeById(nodeId) {
+        // Trigger node selection via Gradio bridge
+        var event = new CustomEvent('flowchart-node-select', { detail: { nodeId: nodeId } });
+        document.dispatchEvent(event);
+    }
+
+    document.addEventListener('keydown', function(e) {
+        var container = document.getElementById('flowchart-container');
+        if (!container || !container.contains(e.target)) return;
+
+        var nodes = getVisibleNodes();
+        if (nodes.length === 0) return;
+
+        // Find current active node from URL hash
+        var hash = new URLSearchParams(window.location.hash.slice(1));
+        var currentId = hash.get('node') || nodes[0];
+        var idx = findNodeIndex(currentId, nodes);
+
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                idx = Math.min(idx + 1, nodes.length - 1);
+                selectNodeById(nodes[idx]);
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                idx = Math.max(idx - 1, 0);
+                selectNodeById(nodes[idx]);
+                break;
+            case 'ArrowRight':
+                e.preventDefault();
+                // Expand: try to dispatch collapse-toggle with opposite intent
+                // The node might be a collapsible group — send expand request
+                // by toggling if currently collapsed. Since we can't detect
+                // collapse state from SVG attributes easily, skip for now.
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                // Collapse (same issue as above)
+                break;
+            case 'Enter':
+                e.preventDefault();
+                if (currentId && idx >= 0) {
+                    selectNodeById(nodes[idx]);
+                }
+                break;
+        }
+    });
+
+    // ── Auto-Scroll to Active Node ──
+    var scrollObserver = new MutationObserver(function() {
+        var hash = new URLSearchParams(window.location.hash.slice(1));
+        var nodeId = hash.get('node');
+        if (!nodeId) return;
+        var svg = document.querySelector('#flowchart-container svg');
+        if (!svg) return;
+        var group = svg.querySelector('#group-' + nodeId);
+        if (!group) return;
+        var bbox = group.getBoundingClientRect();
+        var container = document.getElementById('flowchart-container');
+        if (!container) return;
+        var scrollTop = container.scrollTop + bbox.top - bbox.height - 20;
+        container.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
+    });
+    var containerEl = document.getElementById('flowchart-container');
+    if (containerEl) {
+        scrollObserver.observe(containerEl, { childList: true, subtree: true });
+    }
+
+    // ── URL Hash Restore on Load ──
+    var hash = window.location.hash;
+    if (hash && hash.length > 1) {
+        try {
+            var params = new URLSearchParams(hash.slice(1));
+            var nodeId = params.get('node');
+            var stepStr = params.get('step');
+            if (nodeId) {
+                // Wait for SVG to exist, then select the node
+                var waitInterval = setInterval(function() {
+                    var svg = document.querySelector('#flowchart-container svg');
+                    if (svg) {
+                        clearInterval(waitInterval);
+                        selectNodeById(nodeId);
+                    }
+                }, 200);
+                // Stop waiting after 10 seconds
+                setTimeout(function() { clearInterval(waitInterval); }, 10000);
+            }
+        } catch(_) {}
+    }
+
+    // ── Persist step in URL hash ──
+    // Listen for Gradio slider changes (polling approach)
+    var stepSlider = document.getElementById('token-step-slider');
+    if (stepSlider) {
+        stepSlider.addEventListener('change', function() {
+            try {
+                var hash = new URLSearchParams(window.location.hash.slice(1));
+                hash.set('step', this.value);
+                history.replaceState(null, '', '#' + hash.toString());
+            } catch(_) {}
+        });
+    }
 })();
 </script>
 """
@@ -688,6 +913,13 @@ def create_ui() -> gr.Blocks:
                     minimum=1, maximum=100, value=20, step=1,
                     label="Max tokens",
                 )
+            with gr.Column(scale=2, min_width=150):
+                token_step_slider = gr.Slider(
+                    minimum=0, maximum=0, step=1, value=0,
+                    label="Token step",
+                    interactive=False,
+                    elem_id="token-step-slider",
+                )
             with gr.Column(scale=1, min_width=80):
                 step_btn = gr.Button(
                     "▶ Step",
@@ -708,6 +940,21 @@ def create_ui() -> gr.Blocks:
         with gr.Row(equal_height=False):
             # ── LEFT: Flowchart ──
             with gr.Column(scale=35, min_width=350):
+                with gr.Row(equal_height=True):
+                    search_input = gr.Textbox(
+                        label="🔍 Search nodes",
+                        placeholder="e.g. attention, layer 5",
+                        elem_id="node-search-input",
+                        scale=3,
+                    )
+                    expand_all_btn = gr.Button(
+                        "📂 Expand All", size="sm", scale=1,
+                        elem_id="expand-all-btn",
+                    )
+                    collapse_all_btn = gr.Button(
+                        "📁 Collapse All", size="sm", scale=1,
+                        elem_id="collapse-all-btn",
+                    )
                 flowchart_html = gr.HTML(
                     value=controller.current_svg,
                     elem_id="flowchart-container",
@@ -747,7 +994,7 @@ def create_ui() -> gr.Blocks:
         generate_btn.click(
             fn=on_generate,
             inputs=[prompt_input, max_new_input, temperature_input],
-            outputs=[flowchart_html, detail_plot, detail_title, detail_description],
+            outputs=[flowchart_html, detail_plot, detail_title, detail_description, token_step_slider],
         )
 
         # Node selection from JS bridge
@@ -768,13 +1015,37 @@ def create_ui() -> gr.Blocks:
         step_btn.click(
             fn=on_step,
             inputs=[prompt_input, temperature_input],
-            outputs=[flowchart_html, detail_plot, detail_title, detail_description],
+            outputs=[flowchart_html, detail_plot, detail_title, detail_description, token_step_slider],
         )
 
         # Reset button → on_reset()
         reset_btn.click(
             fn=on_reset,
+            outputs=[flowchart_html, detail_plot, detail_title, detail_description, token_step_slider],
+        )
+
+        # Token step slider → on_step_select(token_idx)
+        token_step_slider.change(
+            fn=on_step_select,
+            inputs=[token_step_slider],
             outputs=[flowchart_html, detail_plot, detail_title, detail_description],
+        )
+
+        # Expand / Collapse All buttons
+        expand_all_btn.click(
+            fn=on_expand_all,
+            outputs=[flowchart_html],
+        )
+        collapse_all_btn.click(
+            fn=on_collapse_all,
+            outputs=[flowchart_html],
+        )
+
+        # Search input → on_node_search(query)
+        search_input.change(
+            fn=on_node_search,
+            inputs=[search_input],
+            outputs=[flowchart_html],
         )
 
     return demo

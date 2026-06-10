@@ -2,7 +2,9 @@
 
 **Goal:** Transform the static SVG flowchart into a fully interactive navigation tool — click any node to see its live plot, collapse/expand layer groups, step through tokens, and navigate the tree efficiently.
 
-**Dependencies:** Phase 3 (ui.py) ✅, Phase 2.1–2.2 (node tree) ✅, Phase 2.3 (SVG rendering) ✅ with caveats.
+**Status:** ✅ ALL TASKS COMPLETE (2026-06-10)
+
+**Dependencies:** Phase 3 (ui.py) ✅, Phase 2.1–2.2 (node tree) ✅, Phase 2.3 (SVG rendering) ✅
 
 ---
 

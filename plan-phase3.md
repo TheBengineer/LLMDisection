@@ -1,6 +1,6 @@
 # Phase 3 — Two-Panel Flowchart Layout
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-10
 
 ## ⚠️ PLAN AUDIT: Code is AHEAD of plan document
 
@@ -58,8 +58,39 @@ All 18 plot functions exist in `plots.py` — verified against imports in `ui.py
 ## 📋 Fix Roadmap (All Complete)
 
 | Priority | Description | Status |
-|---|---|---|
+|---|---|---|---|
 | **[P0]** `_build_response()` calling `plot_layer_contributions(snapshot)` with wrong type | ✅ FIXED — delegated to `_dispatch_plot("root")` |
 | **[P1]** Step/Reset buttons unconnected | ✅ FIXED — wired `step_btn.click()` → `on_step()` and `reset_btn.click()` → `on_reset()` |
 | **[P2]** Dead imports (`plot_logits_sampled`, `plot_residual_evolution`) | ✅ FIXED — removed from import block |
 | **[P3]** Duplicate layer-index parser | ✅ FIXED — `_layer_index_from_node_id()` now delegates to `_parse_layer_idx()` |
+
+---
+
+# Phase 4 — Interactive Flowchart Clicking
+
+**Status:** Complete (2026-06-10)
+
+## Pre-Existing Bugs Fixed
+
+| Bug | Description | Status |
+|---|---|---|
+| **A** | Collapse toggle broken — `node.collapsed or (id in override)` meant layers could never be expanded. Changed to `node.collapsed and id not in expanded_override` | ✅ FIXED — `flowchart.py:439` |
+| **B** | Glow filter defined in `<defs>` but never applied to active node (missing `filter="url(#glow)"`) | ✅ FIXED — `flowchart.py:654` |
+| **C** | Toggle direction reversed — `on_collapse_toggle` managed a forced-collapse set, now it manages `expanded_override` | ✅ FIXED — `ui.py:636` |
+
+## Tasks Implemented
+
+| Task | Description | Files |
+|---|---|---|
+| **4.1** | SVG Node Interactivity — `onclick` and `cursor:pointer` moved from `<rect>` to parent `<g>`, hover styles added | `flowchart.py` |
+| **4.2** | Active-Node Highlighting — golden glow on selected node, auto-expand ancestors when selecting a child | `flowchart.py`, `ui.py` |
+| **4.3** | Hover Tooltips — all nodes get `<title>`: group nodes show child count, leaf nodes show label + shape | `flowchart.py` |
+| **4.4** | Token Step Slider — `gr.Slider` in top bar, scrubbing updates detail view, max updated after generate/step | `ui.py` |
+| **4.5** | Expand/Collapse All — 📂 Expand All / 📁 Collapse All buttons in flowchart header | `ui.py` |
+| **4.6** | Node Search — search box filters and highlights nodes (cyan), dims non-matching, "No matching nodes" overlay | `flowchart.py`, `ui.py` |
+| **4.7** | Keyboard Navigation — Up/Down arrows traverse visible nodes, Enter selects, `data-visible-nodes` attribute on SVG | `flowchart.py`, `ui.py` |
+| **4.8** | Auto-Scroll to Active Node — `MutationObserver` scrolls flowchart to keep active node visible | `ui.py` |
+| **4.9** | URL Hash Persistence — `#node=...&step=...` saved on selection, restored on page load | `ui.py` |
+| **4.10** | Edge Cases — debouncing guard (`controller.generating`), no-match overlay, reset clears generating flag | `ui.py` |
+| **4.11** | CSS Fade-In Animation — `@keyframes svg-fade-in` on SVG re-render | `ui.py` |
+| **4.12** | Plan document updated — this section | `plan-phase3.md` |
