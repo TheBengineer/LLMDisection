@@ -485,10 +485,10 @@ def _build_response(token_idx: int | None = None) -> tuple:
 def _build_slider_update() -> dict:
     """Return a gr.update for the token step slider."""
     if controller.explorer is not None and controller.explorer.num_steps() > 0:
-        max_val = controller.explorer.num_steps() - 1
+        max_val = max(1, controller.explorer.num_steps() - 1)
         val = controller.latest_step_idx
         return gr.update(maximum=max_val, value=val, interactive=True)
-    return gr.update(maximum=0, value=0, interactive=False)
+    return gr.update(maximum=1, value=0, interactive=False)
 
 
 def _build_full_response(token_idx: int | None = None) -> tuple:
@@ -565,6 +565,8 @@ def on_step_select(token_idx: int) -> tuple:
     """Update the detail view to show a specific token step."""
     if controller.explorer is None or controller.explorer.num_steps() == 0:
         return _empty_response()
+    max_idx = controller.explorer.num_steps() - 1
+    token_idx = max(0, min(token_idx, max_idx))
     return _build_response(token_idx=token_idx)
 
 
@@ -915,7 +917,7 @@ def create_ui() -> gr.Blocks:
                 )
             with gr.Column(scale=2, min_width=150):
                 token_step_slider = gr.Slider(
-                    minimum=0, maximum=0, step=1, value=0,
+                    minimum=0, maximum=1, step=1, value=0,
                     label="Token step",
                     interactive=False,
                     elem_id="token-step-slider",
